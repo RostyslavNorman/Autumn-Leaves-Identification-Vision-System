@@ -33,13 +33,12 @@ public class ImageProcessor {
     // Selected leaf colors (user can pick multiple)
     private List<Color> selectedColors;
 
-    // Tolerance settings for color matching
-    private double hueTolerance = 30.0;        // Degrees (0-360)
-    private double saturationTolerance = 0.3;  // 0.0-1.0
-    private double brightnessTolerance = 0.3;  // 0.0-1.0
+    private double hueTolerance = 28.0;
+    private double saturationTolerance = 0.30;
+    private double brightnessTolerance = 0.38; // slightly looser brightness is ok
 
     // Target size for processing (smaller = faster)
-    private static final int DEFAULT_PROCESS_SIZE = 512;
+    private static final int DEFAULT_PROCESS_SIZE = 200;
 
     /**
      * Create a new ImageProcessor.
@@ -136,25 +135,24 @@ public class ImageProcessor {
         }
 
         // Create the scaled image if needed
-        Image sourceImage = originalImage;
-        if (width != originalImage.getWidth() || height != originalImage.getHeight()) {
-            sourceImage = new WritableImage(
-                    originalImage.getPixelReader(),
-                    (int) originalImage.getWidth(),
-                    (int) originalImage.getHeight()
-            );
-            // Create a properly scaled version
-            sourceImage = new Image(
-                    originalImage.getUrl(),
-                    width,
-                    height,
-                    true,  // preserveRatio
-                    true   // smooth
-            );
+        // Manually scale by sampling - avoids getUrl() NPE
+        WritableImage scaledSource = new WritableImage(width, height);
+        PixelWriter scaledWriter = scaledSource.getPixelWriter();
+        PixelReader originalReader = originalImage.getPixelReader();
+
+        double scaleX = originalImage.getWidth() / width;
+        double scaleY = originalImage.getHeight() / height;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int srcX = (int) Math.min(x * scaleX, originalImage.getWidth() - 1);
+                int srcY = (int) Math.min(y * scaleY, originalImage.getHeight() - 1);
+                scaledWriter.setColor(x, y, originalReader.getColor(srcX, srcY));
+            }
         }
 
         processedImage = new WritableImage(width, height);
-        PixelReader reader = sourceImage.getPixelReader();
+        PixelReader reader = scaledSource.getPixelReader();
         PixelWriter writer = processedImage.getPixelWriter();
 
         int whiteCount = 0;
@@ -220,25 +218,32 @@ public class ImageProcessor {
         double sat2 = color2.getSaturation();
         double bri2 = color2.getBrightness();
 
-        // Handle special case: both colors are grayscale
-        if (sat1 < 0.1 && sat2 < 0.1) {
-            // For grayscale, only compare brightness
+        // Reject very dark pixels (shadows, dirt) - brightness below 0.15
+        if (bri1 < 0.15) return false;
+
+        // Reject clearly green pixels regardless of tolerance
+        // Green hue is roughly 80-160 degrees
+        if (hue1 >= 80 && hue1 <= 160 && sat1 > 0.25) return false;
+
+        // Both low saturation (brownish/grayish leaves are valid!)
+        if (sat1 < 0.15 && sat2 < 0.15) {
             return Math.abs(bri1 - bri2) <= brightnessTolerance;
         }
 
-        // Hue difference (handle wraparound at 0/360)
-        double hueDiff = Math.abs(hue1 - hue2);
-        if (hueDiff > 180) {
-            hueDiff = 360 - hueDiff;
+        // One is saturated, one is not - still allow with loose check
+        // (leaf edges can appear washed out)
+        if (sat1 < 0.15 && sat2 >= 0.15) {
+            // Allow if brightness is similar (pale/washed leaf areas)
+            return Math.abs(bri1 - bri2) <= brightnessTolerance * 0.6;
         }
 
-        // Saturation difference
-        double satDiff = Math.abs(sat1 - sat2);
+        // Normal case: compare all three HSB components
+        double hueDiff = Math.abs(hue1 - hue2);
+        if (hueDiff > 180) hueDiff = 360 - hueDiff;
 
-        // Brightness difference
+        double satDiff = Math.abs(sat1 - sat2);
         double briDiff = Math.abs(bri1 - bri2);
 
-        // Color matches if all components are within tolerance
         return hueDiff <= hueTolerance &&
                 satDiff <= saturationTolerance &&
                 briDiff <= brightnessTolerance;

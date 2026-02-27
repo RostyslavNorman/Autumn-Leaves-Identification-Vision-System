@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Solves the Travelling Salesman Problem (TSP) to find a path connecting all leaf clusters.
+ * Solves the Traveling Salesman Problem (TSP) to find a path connecting all leaf clusters.
  *
  * This implementation uses the Nearest Neighbor algorithm, which is:
  * - Simple to implement

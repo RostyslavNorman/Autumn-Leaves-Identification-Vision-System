@@ -24,8 +24,8 @@ public class LeafDetector {
     private List<Leaf> detectedLeaves;
 
     // Noise filtering parameters
-    private int minLeafSize = 10;      // Minimum pixels for valid leaf
-    private int maxLeafSize = 50000;   // Maximum pixels for valid leaf
+    private int minLeafSize = 5;      // Minimum pixels for valid leaf
+    private int maxLeafSize = 15000;   // Maximum pixels for valid leaf
 
     // Statistics
     private int totalPixels;
@@ -119,20 +119,28 @@ public class LeafDetector {
                 whitePixels++;
                 int currentIndex = imageProcessor.getPixelIndex(x, y);
 
-                // Check RIGHT neighbor (x+1, y)
+                // Check RIGHT neighbor
                 if (x + 1 < width && imageProcessor.isWhitePixel(x + 1, y)) {
-                    int rightIndex = imageProcessor.getPixelIndex(x + 1, y);
-                    if (disjointSet.union(currentIndex, rightIndex)) {
-                        unionOperations++;
-                    }
+                    disjointSet.union(currentIndex, imageProcessor.getPixelIndex(x + 1, y));
+                    unionOperations++;
                 }
 
-                // Check DOWN neighbor (x, y+1)
+                // Check DOWN neighbor
                 if (y + 1 < height && imageProcessor.isWhitePixel(x, y + 1)) {
-                    int downIndex = imageProcessor.getPixelIndex(x, y + 1);
-                    if (disjointSet.union(currentIndex, downIndex)) {
-                        unionOperations++;
-                    }
+                    disjointSet.union(currentIndex, imageProcessor.getPixelIndex(x, y + 1));
+                    unionOperations++;
+                }
+
+                // ADD: Check DIAGONAL DOWN-RIGHT
+                if (x + 1 < width && y + 1 < height && imageProcessor.isWhitePixel(x + 1, y + 1)) {
+                    disjointSet.union(currentIndex, imageProcessor.getPixelIndex(x + 1, y + 1));
+                    unionOperations++;
+                }
+
+                // ADD: Check DIAGONAL DOWN-LEFT
+                if (x - 1 >= 0 && y + 1 < height && imageProcessor.isWhitePixel(x - 1, y + 1)) {
+                    disjointSet.union(currentIndex, imageProcessor.getPixelIndex(x - 1, y + 1));
+                    unionOperations++;
                 }
             }
         }
@@ -194,15 +202,34 @@ public class LeafDetector {
      */
     private void filterNoise() {
         System.out.println("Step 4: Filtering noise...");
-
         int beforeCount = detectedLeaves.size();
 
-        // Simple filtering by size
-        detectedLeaves.removeIf(leaf -> !leaf.isValidLeaf(minLeafSize, maxLeafSize));
+        if (detectedLeaves.isEmpty()) return;
+
+        // Calculate median size to set intelligent thresholds
+        List<Integer> sizes = new ArrayList<>();
+        for (Leaf leaf : detectedLeaves) {
+            sizes.add(leaf.getSize());
+        }
+        Collections.sort(sizes);
+
+        int medianSize = sizes.get(sizes.size() / 2);
+        int totalPixels = imageProcessor.getWidth() * imageProcessor.getHeight();
+
+        // Dynamic thresholds based on image size and median
+        // Min: at least 0.01% of image or hardcoded min, whichever is larger
+        int dynamicMin = Math.max(minLeafSize, totalPixels / 10000);
+        // Max: no single leaf should be more than 8% of the entire image
+        int dynamicMax = Math.min(maxLeafSize, totalPixels / 12);
+
+        System.out.println("  Median cluster size: " + medianSize);
+        System.out.println("  Dynamic filter range: [" + dynamicMin + ", " + dynamicMax + "]");
+
+        detectedLeaves.removeIf(leaf -> leaf.getSize() < dynamicMin || leaf.getSize() > dynamicMax);
 
         int afterCount = detectedLeaves.size();
-        System.out.println("  - Removed " + (beforeCount - afterCount) + " noise clusters");
-        System.out.println("  - Valid leaves remaining: " + afterCount);
+        System.out.println("  Removed " + (beforeCount - afterCount) + " noise clusters");
+        System.out.println("  Valid leaves remaining: " + afterCount);
     }
 
     /**
