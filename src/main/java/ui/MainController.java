@@ -22,7 +22,6 @@ import model.*;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * Main controller for the Autumn Leaves Identification System GUI.
@@ -67,6 +66,16 @@ public class MainController {
     private boolean showRectangles = true;
     private boolean showNumbers = false;
 
+    // Hover tooltip shown over leaf rectangles — reused to avoid repeated allocations
+    private final Tooltip leafTooltip = new Tooltip();
+    // The leaf currently highlighted by hover (null = none)
+    private Leaf hoveredLeaf = null;
+
+    // Live-preview settings window — kept as a field so we never open two at once
+    private Stage settingsStage = null;
+    // Background thread used for live preview conversions; cancelled on each new slider change
+    private volatile Thread previewThread = null;
+
     @FXML
     public void initialize() {
         System.out.println("Initializing MainController...");
@@ -74,7 +83,19 @@ public class MainController {
         imageProcessor = new ImageProcessor();
         detectedLeaves = new ArrayList<>();
 
+        // Hover: show leaf info in a floating tooltip, highlight the leaf
+        overlayCanvas.setOnMouseMoved(this::handleCanvasHover);
+        // When the mouse leaves the canvas entirely, clear any highlight
+        overlayCanvas.setOnMouseExited(e -> clearHover());
+
+        // Click still works: selects/highlights a leaf with a persistent highlight
         overlayCanvas.setOnMouseClicked(this::handleCanvasClick);
+
+        // Style the reusable tooltip (larger font, no delay)
+        leafTooltip.setStyle("-fx-font-size: 12px;");
+        leafTooltip.setShowDelay(Duration.ZERO);
+        leafTooltip.setHideDelay(Duration.ZERO);
+        leafTooltip.setShowDuration(Duration.INDEFINITE);
 
         updateStatus("Ready. Load an image to begin.");
         System.out.println("MainController initialized");
@@ -259,75 +280,226 @@ public class MainController {
 
     @FXML
     private void handleSettings() {
-        Dialog<ButtonType> dialog = new Dialog<>();
-        dialog.setTitle("Settings");
-        dialog.setHeaderText("Detection Settings");
+        // Only one settings window at a time
+        if (settingsStage != null && settingsStage.isShowing()) {
+            settingsStage.toFront();
+            return;
+        }
 
+        if (imageProcessor.getSelectedColors().isEmpty()) {
+            showError("No Colors", "Please select leaf colors before opening Settings.");
+            return;
+        }
+
+        // ---- Snapshot current tolerances so Cancel can fully revert ----
+        final double origHue = imageProcessor.getHueTolerance();
+        final double origSat = imageProcessor.getSaturationTolerance();
+        final double origBri = imageProcessor.getBrightnessTolerance();
+        final int    origMin = leafDetector != null ? leafDetector.getMinLeafSize() : 5;
+        final int    origMax = leafDetector != null ? leafDetector.getMaxLeafSize() : 15000;
+
+        // ---- Build sliders ----
+        Slider hueSlider = new Slider(0, 180, origHue);
+        Slider satSlider = new Slider(0,   1, origSat);
+        Slider briSlider = new Slider(0,   1, origBri);
+        for (Slider s : new Slider[]{hueSlider, satSlider, briSlider}) {
+            s.setShowTickLabels(true);
+            s.setShowTickMarks(true);
+            s.setPrefWidth(260);
+        }
+        hueSlider.setMajorTickUnit(30);
+        satSlider.setMajorTickUnit(0.2);
+        briSlider.setMajorTickUnit(0.2);
+
+        Label hueValue = new Label(String.format("%.0f°",  origHue));
+        Label satValue = new Label(String.format("%.2f",   origSat));
+        Label briValue = new Label(String.format("%.2f",   origBri));
+        for (Label l : new Label[]{hueValue, satValue, briValue}) {
+            l.setMinWidth(40);
+            l.setStyle("-fx-font-weight: bold;");
+        }
+
+        TextField minField = new TextField(String.valueOf(origMin));
+        TextField maxField = new TextField(String.valueOf(origMax));
+
+        // ---- Live-preview spinner shown while re-processing ----
+        ProgressIndicator spinner = new ProgressIndicator();
+        spinner.setPrefSize(20, 20);
+        spinner.setVisible(false);
+        Label previewLabel = new Label("Preview up-to-date");
+        previewLabel.setStyle("-fx-text-fill: grey; -fx-font-size: 11px;");
+
+        // ---- Layout ----
         GridPane grid = new GridPane();
         grid.setHgap(10);
-        grid.setVgap(10);
+        grid.setVgap(12);
+        grid.setPadding(new javafx.geometry.Insets(16));
 
-        Label hueLabel = new Label("Hue Tolerance (°):");
-        Slider hueSlider = new Slider(0, 180, imageProcessor.getHueTolerance());
-        hueSlider.setShowTickLabels(true);
-        hueSlider.setShowTickMarks(true);
-        hueSlider.setMajorTickUnit(30);
-        Label hueValue = new Label(String.format("%.0f", hueSlider.getValue()));
-        hueSlider.valueProperty().addListener((obs, old, val) ->
-                hueValue.setText(String.format("%.0f", val.doubleValue())));
+        grid.add(new Label("Hue Tolerance (°):"),    0, 0);
+        grid.add(hueSlider,                          1, 0);
+        grid.add(hueValue,                           2, 0);
 
-        Label satLabel = new Label("Saturation Tolerance:");
-        Slider satSlider = new Slider(0, 1, imageProcessor.getSaturationTolerance());
-        satSlider.setShowTickLabels(true);
-        satSlider.setShowTickMarks(true);
-        satSlider.setMajorTickUnit(0.2);
-        Label satValue = new Label(String.format("%.2f", satSlider.getValue()));
-        satSlider.valueProperty().addListener((obs, old, val) ->
-                satValue.setText(String.format("%.2f", val.doubleValue())));
+        grid.add(new Label("Saturation Tolerance:"), 0, 1);
+        grid.add(satSlider,                          1, 1);
+        grid.add(satValue,                           2, 1);
 
-        Label briLabel = new Label("Brightness Tolerance:");
-        Slider briSlider = new Slider(0, 1, imageProcessor.getBrightnessTolerance());
-        briSlider.setShowTickLabels(true);
-        briSlider.setShowTickMarks(true);
-        briSlider.setMajorTickUnit(0.2);
-        Label briValue = new Label(String.format("%.2f", briSlider.getValue()));
-        briSlider.valueProperty().addListener((obs, old, val) ->
-                briValue.setText(String.format("%.2f", val.doubleValue())));
+        grid.add(new Label("Brightness Tolerance:"), 0, 2);
+        grid.add(briSlider,                          1, 2);
+        grid.add(briValue,                           2, 2);
 
-        Label minLabel = new Label("Min Leaf Size (pixels):");
-        TextField minField = new TextField(String.valueOf(
-                leafDetector != null ? leafDetector.getMinLeafSize() : 10));
+        grid.add(new Label("Min Leaf Size (px):"),   0, 3);
+        grid.add(minField,                           1, 3);
 
-        Label maxLabel = new Label("Max Leaf Size (pixels):");
-        TextField maxField = new TextField(String.valueOf(
-                leafDetector != null ? leafDetector.getMaxLeafSize() : 50000));
+        grid.add(new Label("Max Leaf Size (px):"),   0, 4);
+        grid.add(maxField,                           1, 4);
 
-        grid.add(hueLabel, 0, 0); grid.add(hueSlider, 1, 0); grid.add(hueValue, 2, 0);
-        grid.add(satLabel, 0, 1); grid.add(satSlider, 1, 1); grid.add(satValue, 2, 1);
-        grid.add(briLabel, 0, 2); grid.add(briSlider, 1, 2); grid.add(briValue, 2, 2);
-        grid.add(minLabel, 0, 3); grid.add(minField, 1, 3, 2, 1);
-        grid.add(maxLabel, 0, 4); grid.add(maxField, 1, 4, 2, 1);
+        javafx.scene.layout.HBox statusRow = new javafx.scene.layout.HBox(8, spinner, previewLabel);
+        statusRow.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        grid.add(statusRow, 0, 5, 3, 1);
 
-        dialog.getDialogPane().setContent(grid);
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        Button applyBtn  = new Button("Apply & Close");
+        Button cancelBtn = new Button("Cancel");
+        applyBtn.setDefaultButton(true);
+        applyBtn.setStyle("-fx-base: #4CAF50; -fx-text-fill: white;");
 
-        Optional<ButtonType> result = dialog.showAndWait();
-        if (result.isPresent() && result.get() == ButtonType.OK) {
+        javafx.scene.layout.HBox buttons = new javafx.scene.layout.HBox(10, applyBtn, cancelBtn);
+        buttons.setAlignment(javafx.geometry.Pos.CENTER_RIGHT);
+        buttons.setPadding(new javafx.geometry.Insets(8, 0, 0, 0));
+        grid.add(buttons, 0, 6, 3, 1);
+
+        // ---- Wire up live preview ----
+        // Each slider change: push tolerances into imageProcessor then re-convert on a
+        // background thread so the FX thread (and both ImageViews) never freezes.
+        Runnable triggerPreview = () -> {
+            // Update tolerances immediately so imageProcessor uses them
             imageProcessor.setHueTolerance(hueSlider.getValue());
             imageProcessor.setSaturationTolerance(satSlider.getValue());
             imageProcessor.setBrightnessTolerance(briSlider.getValue());
 
+            hueValue.setText(String.format("%.0f°", hueSlider.getValue()));
+            satValue.setText(String.format("%.2f",  satSlider.getValue()));
+            briValue.setText(String.format("%.2f",  briSlider.getValue()));
+
+            // Cancel any in-flight preview
+            Thread prev = previewThread;
+            if (prev != null) prev.interrupt();
+
+            spinner.setVisible(true);
+            previewLabel.setText("Processing…");
+
+            Thread t = new Thread(() -> {
+                try {
+                    // Small debounce so rapid dragging doesn't flood the processor
+                    Thread.sleep(120);
+                    if (Thread.currentThread().isInterrupted()) return;
+
+                    var displayBW = imageProcessor.convertToBlackAndWhite();
+
+                    if (Thread.currentThread().isInterrupted()) return;
+
+                    Platform.runLater(() -> {
+                        bwImageView.setImage(displayBW);
+                        bwImageView.setFitWidth(imageView.getFitWidth());
+                        bwImageView.setFitHeight(imageView.getFitHeight());
+
+                        // If leaves were already detected, re-detect with new thresholds
+                        // so rectangles reflect the updated segmentation
+                        if (!detectedLeaves.isEmpty()) {
+                            LeafDetector ld = new LeafDetector(imageProcessor);
+                            try {
+                                int mn = Integer.parseInt(minField.getText().trim());
+                                int mx = Integer.parseInt(maxField.getText().trim());
+                                ld.setLeafSizeRange(mn, mx);
+                            } catch (NumberFormatException ignored) {}
+                            detectedLeaves = ld.detectLeaves();
+                            leafDetector   = ld;
+                            labelLeavesCount.setText(String.valueOf(detectedLeaves.size()));
+                            if (showRectangles) drawLeafRectangles();
+                        }
+
+                        spinner.setVisible(false);
+                        previewLabel.setText("Preview up-to-date");
+                        updateStatus("Live preview — Hue: " +
+                                String.format("%.0f°", imageProcessor.getHueTolerance()) +
+                                "  Sat: " + String.format("%.2f", imageProcessor.getSaturationTolerance()) +
+                                "  Bri: " + String.format("%.2f", imageProcessor.getBrightnessTolerance()));
+                    });
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); // swallow — expected cancellation
+                }
+            });
+            t.setDaemon(true);
+            previewThread = t;
+            t.start();
+        };
+
+        // Attach the live-preview listener to every slider
+        hueSlider.valueProperty().addListener((obs, o, n) -> triggerPreview.run());
+        satSlider.valueProperty().addListener((obs, o, n) -> triggerPreview.run());
+        briSlider.valueProperty().addListener((obs, o, n) -> triggerPreview.run());
+
+        // Leaf size fields: preview on focus-lost (not every keystroke)
+        minField.focusedProperty().addListener((obs, o, focused) -> { if (!focused) triggerPreview.run(); });
+        maxField.focusedProperty().addListener((obs, o, focused) -> { if (!focused) triggerPreview.run(); });
+
+        // ---- Apply / Cancel ----
+        applyBtn.setOnAction(e -> {
+            // Tolerances are already live in imageProcessor; just persist leaf sizes
             if (leafDetector != null) {
                 try {
                     leafDetector.setLeafSizeRange(
-                            Integer.parseInt(minField.getText()),
-                            Integer.parseInt(maxField.getText()));
-                } catch (NumberFormatException e) {
+                            Integer.parseInt(minField.getText().trim()),
+                            Integer.parseInt(maxField.getText().trim()));
+                } catch (NumberFormatException ex) {
                     showError("Invalid Input", "Please enter valid numbers for leaf size.");
+                    return;
                 }
             }
-            updateStatus("Settings updated");
-        }
+            updateStatus("Settings applied.");
+            settingsStage.close();
+        });
+
+        cancelBtn.setOnAction(e -> {
+            // Revert all tolerances to what they were when the window opened
+            imageProcessor.setHueTolerance(origHue);
+            imageProcessor.setSaturationTolerance(origSat);
+            imageProcessor.setBrightnessTolerance(origBri);
+            if (leafDetector != null) leafDetector.setLeafSizeRange(origMin, origMax);
+
+            // Re-run conversion once to restore the original images
+            new Thread(() -> {
+                var displayBW = imageProcessor.convertToBlackAndWhite();
+                Platform.runLater(() -> {
+                    bwImageView.setImage(displayBW);
+                    bwImageView.setFitWidth(imageView.getFitWidth());
+                    bwImageView.setFitHeight(imageView.getFitHeight());
+                    if (!detectedLeaves.isEmpty()) {
+                        LeafDetector ld = new LeafDetector(imageProcessor);
+                        ld.setLeafSizeRange(origMin, origMax);
+                        detectedLeaves = ld.detectLeaves();
+                        leafDetector   = ld;
+                        labelLeavesCount.setText(String.valueOf(detectedLeaves.size()));
+                        if (showRectangles) drawLeafRectangles();
+                    }
+                    updateStatus("Settings cancelled — reverted to previous values.");
+                });
+            }).start();
+
+            settingsStage.close();
+        });
+
+        // ---- Show the window ----
+        javafx.scene.Scene scene = new javafx.scene.Scene(grid);
+        settingsStage = new Stage();
+        settingsStage.setTitle("Detection Settings (Live Preview)");
+        settingsStage.setScene(scene);
+        settingsStage.setResizable(false);
+        // Keep it above the main window but don't block it
+        settingsStage.initOwner(primaryStage);
+        settingsStage.initModality(javafx.stage.Modality.NONE);
+        // If the user closes the window via the X button, treat as Cancel
+        settingsStage.setOnCloseRequest(e -> cancelBtn.fire());
+        settingsStage.show();
     }
 
     // ========================================================================
@@ -543,7 +715,40 @@ public class MainController {
         }
     }
 
-    /** Highlight a single leaf during animation. */
+    /**
+     * Draw a coloured border around one leaf in the overlay canvas.
+     * Used for hover (green) and click (orange) feedback without redrawing everything.
+     */
+    private void drawLeafHighlight(Leaf leaf, Color color, double lineWidth) {
+        if (overlayCanvas == null) return;
+        Image image = imageView.getImage();
+        if (image == null) return;
+
+        double procToOrigX = image.getWidth()  / (double) imageProcessor.getWidth();
+        double procToOrigY = image.getHeight() / (double) imageProcessor.getHeight();
+        double fitW = imageView.getFitWidth();
+        double fitH = imageView.getFitHeight();
+        double uniformScale = Math.min(fitW / image.getWidth(), fitH / image.getHeight());
+        double offsetX = (fitW  - image.getWidth()  * uniformScale) / 2.0;
+        double offsetY = (fitH  - image.getHeight() * uniformScale) / 2.0;
+
+        javafx.geometry.Rectangle2D bounds = leaf.getBoundingBox();
+        double x = bounds.getMinX() * procToOrigX * uniformScale + offsetX;
+        double y = bounds.getMinY() * procToOrigY * uniformScale + offsetY;
+        double w = bounds.getWidth()  * procToOrigX * uniformScale;
+        double h = bounds.getHeight() * procToOrigY * uniformScale;
+
+        GraphicsContext gc = overlayCanvas.getGraphicsContext2D();
+        gc.setStroke(color);
+        gc.setLineWidth(lineWidth);
+        gc.strokeRect(x, y, w, h);
+
+        gc.setFill(color);
+        gc.setFont(new javafx.scene.text.Font(12));
+        gc.fillText("#" + leaf.getSequentialNumber(), x + 5, y + 15);
+    }
+
+    /** Highlight a single leaf during animation (kept for TSP animation). */
     private void highlightLeaf(Leaf leaf, Color color) {
         if (overlayCanvas == null) return;
 
@@ -577,37 +782,99 @@ public class MainController {
         gc.fillText("#" + leaf.getSequentialNumber(), x + 5, y + 15);
     }
 
-    private void handleCanvasClick(MouseEvent event) {
-        if (detectedLeaves.isEmpty() || leafDetector == null) return;
-
+    // ---- coordinate helper: canvas mouse position → processing-space pixel ----
+    private int[] canvasToProcessing(double canvasX, double canvasY) {
         Image image = imageView.getImage();
-        if (image == null) return;
+        if (image == null) return null;
 
         double fitW = imageView.getFitWidth();
         double fitH = imageView.getFitHeight();
         double uniformScale = Math.min(fitW / image.getWidth(), fitH / image.getHeight());
-
         double offsetX = (fitW  - image.getWidth()  * uniformScale) / 2.0;
         double offsetY = (fitH  - image.getHeight() * uniformScale) / 2.0;
 
-        // Canvas click → processing space
-        double origX = (event.getX() - offsetX) / uniformScale;
-        double origY = (event.getY() - offsetY) / uniformScale;
+        double origX = (canvasX - offsetX) / uniformScale;
+        double origY = (canvasY - offsetY) / uniformScale;
 
         int procX = (int) (origX / (image.getWidth()  / (double) imageProcessor.getWidth()));
         int procY = (int) (origY / (image.getHeight() / (double) imageProcessor.getHeight()));
+        return new int[]{procX, procY};
+    }
 
-        Leaf clickedLeaf = leafDetector.getLeafAtPixel(procX, procY);
-        if (clickedLeaf != null) {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Leaf Information");
-            alert.setHeaderText("Clicked Leaf Details");
-            alert.setContentText(String.format(
-                    "Leaf #%d\nSize: %d pixels\nBounds: (%d,%d) to (%d,%d)",
-                    clickedLeaf.getSequentialNumber(), clickedLeaf.getSize(),
-                    clickedLeaf.getMinX(), clickedLeaf.getMinY(),
-                    clickedLeaf.getMaxX(), clickedLeaf.getMaxY()));
-            alert.showAndWait();
+    /**
+     * Mouse-move handler: find which leaf (if any) is under the cursor,
+     * highlight it with a green stroke and show a floating Tooltip with leaf info.
+     * No dialog — no blocking.
+     */
+    private void handleCanvasHover(MouseEvent event) {
+        if (detectedLeaves.isEmpty() || leafDetector == null) return;
+
+        int[] proc = canvasToProcessing(event.getX(), event.getY());
+        if (proc == null) return;
+
+        Leaf leaf = leafDetector.getLeafAtPixel(proc[0], proc[1]);
+
+        if (leaf == hoveredLeaf) return;  // same leaf — nothing to redraw
+        hoveredLeaf = leaf;
+
+        // Redraw rectangles to remove previous hover highlight
+        drawLeafRectangles();
+
+        if (leaf != null) {
+            // Draw green highlight over the hovered leaf
+            drawLeafHighlight(leaf, Color.LIMEGREEN, 2.5);
+
+            // Update and show tooltip near the cursor
+            leafTooltip.setText(String.format(
+                    "Leaf #%d  |  %d px  |  (%d,%d)–(%d,%d)",
+                    leaf.getSequentialNumber(), leaf.getSize(),
+                    leaf.getMinX(), leaf.getMinY(),
+                    leaf.getMaxX(), leaf.getMaxY()));
+
+            // Show tooltip slightly below-right of the cursor in screen coords
+            Tooltip.install(overlayCanvas, leafTooltip);
+            leafTooltip.show(overlayCanvas,
+                    event.getScreenX() + 12,
+                    event.getScreenY() + 12);
+        } else {
+            leafTooltip.hide();
+        }
+    }
+
+    /** Hide tooltip and remove hover highlight when the mouse leaves the canvas. */
+    private void clearHover() {
+        hoveredLeaf = null;
+        leafTooltip.hide();
+        drawLeafRectangles();  // restore normal blue rectangles
+    }
+
+    /**
+     * Click handler: highlight the clicked leaf with orange and show its
+     * info in the status bar — no modal dialog, so the user can keep clicking
+     * other leaves immediately.
+     */
+    private void handleCanvasClick(MouseEvent event) {
+        if (detectedLeaves.isEmpty() || leafDetector == null) return;
+
+        int[] proc = canvasToProcessing(event.getX(), event.getY());
+        if (proc == null) return;
+
+        Leaf leaf = leafDetector.getLeafAtPixel(proc[0], proc[1]);
+        if (leaf != null) {
+            // Show info in status bar — no blocking dialog
+            updateStatus(String.format(
+                    "Leaf #%d  |  Size: %d px  |  Bounds: (%d,%d) → (%d,%d)",
+                    leaf.getSequentialNumber(), leaf.getSize(),
+                    leaf.getMinX(), leaf.getMinY(),
+                    leaf.getMaxX(), leaf.getMaxY()));
+
+            // Orange persistent highlight so the user can see which one was last clicked
+            drawLeafRectangles();
+            drawLeafHighlight(leaf, Color.ORANGE, 3.0);
+        } else {
+            // Clicked on background: clear selection and restore normal view
+            drawLeafRectangles();
+            updateStatus("Detection complete: " + detectedLeaves.size() + " leaves found");
         }
     }
 
