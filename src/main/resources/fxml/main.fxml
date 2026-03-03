@@ -54,6 +54,9 @@
                 <Separator orientation="VERTICAL"/>
                 <Button text="Animate Path" fx:id="btnAnimatePath" onAction="#handleAnimatePath" disable="true"/>
             </ToolBar>
+            <Separator orientation="VERTICAL"/>
+            <HBox fx:id="colorPaletteBox" spacing="6" alignment="CENTER_LEFT"
+                  style="-fx-padding: 0 8;"/>
         </VBox>
     </top>
 
