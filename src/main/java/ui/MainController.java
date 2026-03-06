@@ -37,6 +37,10 @@ import java.util.List;
  * 3. Color palette panel in the toolbar: shows color swatches for every
  *    selected color, allows removing individual colors, and has an "Add Color"
  *    button that opens a standard ColorPicker dialog.
+ * 4. RESET button: clears all state (animation, detection, colors, B&W image)
+ *    so the user can start fresh with the same or a different image.
+ * 5. Color selection is now UNLIMITED — the 3-color minimum gate is removed.
+ *    Even a single color is enough to trigger B&W conversion.
  */
 public class MainController {
 
@@ -62,6 +66,9 @@ public class MainController {
     @FXML private Button btnConvertBW;
     @FXML private Button btnDetectLeaves;
     @FXML private Button btnAnimatePath;
+
+    /** Reset button — wired in FXML with fx:id="btnReset" onAction="#handleReset" */
+    @FXML private Button btnReset;
 
     @FXML private Label       statusLabel;
     @FXML private Label       labelImageInfo;
@@ -183,36 +190,68 @@ public class MainController {
         alert.setContentText(
                 "Click directly on leaf areas in the left image.\n" +
                         "Each click adds one color to the palette panel.\n" +
-                        "After 3+ colors the mode ends automatically.\n\n" +
-                        "You can also use the '+ Add Color' button in the palette\n" +
-                        "panel to pick any color without clicking on the image.");
+                        "Click 'Done Picking' in the toolbar when finished.\n\n" +
+                        "You can also use '+ Add Color' in the palette panel\n" +
+                        "to pick any color without clicking the image.\n\n" +
+                        "There is no minimum — even one color is enough.");
         alert.showAndWait();
 
-        updateStatus("Click on leaves to pick colors…");
-
-        // Pass-through so imageView receives the click
-        overlayCanvas.setMouseTransparent(true);
-        imageView.setOnMouseClicked(this::handleImageClickForColor);
+        enterColorPickingMode();
     }
 
     /**
-     * Handles a click on the image during color-selection mode.
-     * Samples the pixel color, adds it to the palette, refreshes the panel.
+     * Switches the UI into color-picking mode:
+     * - Canvas becomes pass-through so imageView receives clicks.
+     * - A "Done Picking" button appears in the toolbar (replaces the
+     *   "Select Colors" button label) so the user can end the mode at any time.
+     */
+    private void enterColorPickingMode() {
+        updateStatus("Color-picking mode: click on leaves. Press 'Done Picking' when finished.");
+
+        overlayCanvas.setMouseTransparent(true);
+        imageView.setOnMouseClicked(this::handleImageClickForColor);
+
+        // Swap the Select Colors button to a "Done Picking" button
+        btnSelectColors.setText("Done Picking");
+        btnSelectColors.setStyle("-fx-background-color: #F57C00; -fx-text-fill: white;");
+        btnSelectColors.setOnAction(e -> exitColorPickingMode());
+    }
+
+    /** Exits color-picking mode and restores the normal Select Colors button. */
+    private void exitColorPickingMode() {
+        imageView.setOnMouseClicked(null);
+        overlayCanvas.setMouseTransparent(false);
+
+        btnSelectColors.setText("Select Colors");
+        btnSelectColors.setStyle("");
+        btnSelectColors.setOnAction(e -> handleSelectColors());
+
+        int count = imageProcessor.getSelectedColors().size();
+        if (count == 0) {
+            updateStatus("No colors selected yet. Add colors before converting.");
+        } else {
+            updateStatus(count + " color(s) selected. Ready to convert to B&W.");
+            enableProcessingButtons();
+        }
+    }
+
+    /**
+     * Handles a single click on the image during color-picking mode.
+     * Samples the pixel, adds it to the processor, refreshes the palette panel.
+     * No minimum color count — one color is enough.
      */
     private void handleImageClickForColor(MouseEvent event) {
         Image image = imageView.getImage();
         if (image == null) return;
 
         // Account for letterbox offset (preserveRatio=true)
-        double fitW       = imageView.getFitWidth();
-        double fitH       = imageView.getFitHeight();
-        double imgW       = image.getWidth();
-        double imgH       = image.getHeight();
-        double scale      = Math.min(fitW / imgW, fitH / imgH);
-        double renderedW  = imgW * scale;
-        double renderedH  = imgH * scale;
-        double offsetX    = (fitW - renderedW) / 2.0;
-        double offsetY    = (fitH - renderedH) / 2.0;
+        double fitW      = imageView.getFitWidth();
+        double fitH      = imageView.getFitHeight();
+        double imgW      = image.getWidth();
+        double imgH      = image.getHeight();
+        double scale     = Math.min(fitW / imgW, fitH / imgH);
+        double offsetX   = (fitW - imgW * scale) / 2.0;
+        double offsetY   = (fitH - imgH * scale) / 2.0;
 
         double imageX = (event.getX() - offsetX) / scale;
         double imageY = (event.getY() - offsetY) / scale;
@@ -222,33 +261,30 @@ public class MainController {
         Color color = image.getPixelReader().getColor((int) imageX, (int) imageY);
         imageProcessor.addLeafColor(color);
 
-        updateStatus("Added color: " + colorToString(color));
+        updateStatus("Added color: " + colorToString(color)
+                + "  (total: " + imageProcessor.getSelectedColors().size() + ")");
         updateColorsInfo();
         refreshColorPalettePanel();
 
-        if (imageProcessor.getSelectedColors().size() >= 3) {
-            imageView.setOnMouseClicked(null);
-            overlayCanvas.setMouseTransparent(false);
-            updateStatus("Colors selected. Ready to convert to B&W.");
-            enableProcessingButtons();
-        }
+        // Enable conversion as soon as we have at least one color
+        enableProcessingButtons();
     }
 
     @FXML
     private void handleConvertToBlackWhite() {
         if (imageProcessor.getSelectedColors().isEmpty()) {
-            showError("No Colors Selected", "Please select leaf colors first.");
+            showError("No Colors Selected", "Please select at least one leaf color first.");
             return;
         }
 
-        updateStatus("Converting to black and white…");
+        updateStatus("Converting to black and white...");
         progressBar.setVisible(true);
 
         new Thread(() -> {
             try {
-                long start     = System.currentTimeMillis();
-                var displayBW  = imageProcessor.convertToBlackAndWhite();
-                long elapsed   = System.currentTimeMillis() - start;
+                long start    = System.currentTimeMillis();
+                var displayBW = imageProcessor.convertToBlackAndWhite();
+                long elapsed  = System.currentTimeMillis() - start;
 
                 Platform.runLater(() -> {
                     bwImageView.setImage(displayBW);
@@ -277,7 +313,7 @@ public class MainController {
             return;
         }
 
-        updateStatus("Detecting leaves using Union-Find…");
+        updateStatus("Detecting leaves using Union-Find...");
         progressBar.setVisible(true);
 
         new Thread(() -> {
@@ -294,7 +330,6 @@ public class MainController {
                             + " leaves found (" + elapsed + " ms)");
                     progressBar.setVisible(false);
 
-                    // Reset path / selection on fresh detection
                     lastTSPPath  = null;
                     showTSPPath  = false;
                     selectedLeaf = null;
@@ -315,6 +350,98 @@ public class MainController {
     }
 
     // ========================================================================
+    // RESET  (Feature 4)
+    // ========================================================================
+
+    /**
+     * Full reset handler — can be triggered from the Reset button or menu.
+     *
+     * What gets cleared:
+     *   - Animation (stopped if running)
+     *   - TSP path lines
+     *   - Leaf detection results
+     *   - B&W image
+     *   - Selected colors and palette panel
+     *   - Canvas overlay
+     *   - All status labels back to defaults
+     *
+     * What is KEPT:
+     *   - The loaded original image (the user can immediately re-select
+     *     colors and re-run, or load a different image via Open Image).
+     */
+    @FXML
+    private void handleReset() {
+        // Stop any running animation first
+        if (animationTimeline != null) {
+            animationTimeline.stop();
+            animationTimeline = null;
+        }
+
+        // Cancel any in-flight preview thread
+        if (previewThread != null) {
+            previewThread.interrupt();
+            previewThread = null;
+        }
+
+        // Close settings window if open
+        if (settingsStage != null && settingsStage.isShowing()) {
+            settingsStage.close();
+        }
+
+        // Exit color-picking mode cleanly if active
+        if (overlayCanvas.isMouseTransparent()) {
+            exitColorPickingMode();
+        }
+
+        // Clear detection state
+        detectedLeaves.clear();
+        leafDetector    = null;
+        lastTSPPath     = null;
+        showTSPPath     = false;
+        selectedLeaf    = null;
+        hoveredLeaf     = null;
+        leafTooltip.hide();
+
+        // Clear colors
+        imageProcessor.clearLeafColors();
+
+        // Clear B&W image
+        bwImageView.setImage(null);
+
+        // Clear overlay canvas
+        clearCanvas();
+
+        // Reset status labels
+        labelColorsInfo.setText("None");
+        labelLeavesCount.setText("0");
+        labelProcessingTime.setText("-");
+
+        // Refresh palette panel (will show "(none)")
+        refreshColorPalettePanel();
+        updateColorsInfo();
+
+        // Disable downstream buttons — user must re-select colors to proceed
+        menuConvertBW.setDisable(true);
+        btnConvertBW.setDisable(true);
+        menuDetectLeaves.setDisable(true);
+        btnDetectLeaves.setDisable(true);
+        menuAnimatePath.setDisable(true);
+        btnAnimatePath.setDisable(true);
+        menuStopAnimation.setDisable(true);
+
+        // Keep Select Colors enabled if an image is loaded
+        boolean imageLoaded = imageView.getImage() != null;
+        menuSelectColors.setDisable(!imageLoaded);
+        btnSelectColors.setDisable(!imageLoaded);
+
+        updateStatus(imageLoaded
+                ? "Reset complete. Select new leaf colors to start again."
+                : "Reset complete. Load an image to begin.");
+
+        System.out.println("[Reset] All state cleared.");
+    }
+
+    // ========================================================================
     // SETTINGS
     // ========================================================================
 
@@ -329,7 +456,6 @@ public class MainController {
             return;
         }
 
-        // Snapshot originals for Cancel
         final double origHue = imageProcessor.getHueTolerance();
         final double origSat = imageProcessor.getSaturationTolerance();
         final double origBri = imageProcessor.getBrightnessTolerance();
@@ -398,7 +524,6 @@ public class MainController {
         buttons.setPadding(new Insets(8, 0, 0, 0));
         grid.add(buttons, 0, 6, 3, 1);
 
-        // Shared live-preview trigger
         Runnable triggerPreview = () -> {
             imageProcessor.setHueTolerance(hueSlider.getValue());
             imageProcessor.setSaturationTolerance(satSlider.getValue());
@@ -412,7 +537,7 @@ public class MainController {
             if (prev != null) prev.interrupt();
 
             spinner.setVisible(true);
-            previewLabel.setText("Processing…");
+            previewLabel.setText("Processing...");
 
             Thread t = new Thread(() -> {
                 try {
@@ -439,7 +564,7 @@ public class MainController {
                         spinner.setVisible(false);
                         previewLabel.setText("Preview up-to-date");
                         updateStatus("Live preview — Hue: " +
-                                String.format("%.0f°", imageProcessor.getHueTolerance()) +
+                                String.format("%.0f", imageProcessor.getHueTolerance()) + "deg" +
                                 "  Sat: " + String.format("%.2f", imageProcessor.getSaturationTolerance()) +
                                 "  Bri: " + String.format("%.2f", imageProcessor.getBrightnessTolerance()));
                     });
@@ -530,7 +655,7 @@ public class MainController {
     }
 
     // ========================================================================
-    // ANIMATION  — TSP with persistent orange path lines
+    // ANIMATION — TSP with persistent orange path lines
     // ========================================================================
 
     @FXML
@@ -555,13 +680,9 @@ public class MainController {
     /**
      * Runs the TSP nearest-neighbour animation then draws the full orange path.
      *
-     * During animation:
-     *   - Arriving leaf flashes YELLOW.
-     *   - After 80% of the step it settles to CORNFLOWER BLUE.
-     *
-     * After animation finishes:
-     *   - Full overlay is redrawn which includes the orange dashed lines stored
-     *     in {@code lastTSPPath}.
+     * During animation each arriving leaf flashes YELLOW then settles to BLUE.
+     * After it finishes, drawLeafOverlay() redraws everything including the
+     * persistent orange dashed path lines stored in lastTSPPath.
      */
     private void animatePath(int startNumber) {
         List<Leaf> path = TSPSolver.findPathFromNumber(detectedLeaves, startNumber);
@@ -581,11 +702,9 @@ public class MainController {
 
         for (int i = 0; i < path.size(); i++) {
             final Leaf leaf = path.get(i);
-            // Flash on arrival
             animationTimeline.getKeyFrames().add(new KeyFrame(
                     Duration.millis(i * msPerLeaf),
                     e -> highlightLeafAnimation(leaf, Color.YELLOW, 3.5)));
-            // Settle to blue
             animationTimeline.getKeyFrames().add(new KeyFrame(
                     Duration.millis(i * msPerLeaf + msPerLeaf * 0.8),
                     e -> highlightLeafAnimation(leaf, Color.CORNFLOWERBLUE, 2.0)));
@@ -594,10 +713,10 @@ public class MainController {
         animationTimeline.setOnFinished(e -> {
             double dist = TSPSolver.calculatePathLength(path);
             updateStatus(String.format(
-                    "Animation complete — TSP total distance: %.0f px  "
-                            + "| path: %s", dist, TSPSolver.formatPath(path)));
+                    "Animation complete — TSP distance: %.0f px | %s",
+                    dist, TSPSolver.formatPath(path)));
             menuStopAnimation.setDisable(true);
-            drawLeafOverlay();   // shows orange path lines + all labels
+            drawLeafOverlay();
         });
 
         animationTimeline.play();
@@ -623,32 +742,30 @@ public class MainController {
         alert.setTitle("About");
         alert.setHeaderText("Autumn Leaves Identification System");
         alert.setContentText(
-                "Version 2.0\n\n" +
+                "Version 2.1\n\n" +
                         "Features:\n" +
-                        "• Union-Find leaf detection (DisjointSet)\n" +
-                        "• Color-based segmentation with live palette panel\n" +
-                        "• Persistent leaf numbers always visible on canvas\n" +
-                        "• TSP animation with orange dashed connecting lines\n" +
-                        "• JMH benchmarking (see benchmark.LeafBenchmark)\n" +
-                        "• XStream serialization of results\n\n" +
+                        "- Union-Find leaf detection (DisjointSet)\n" +
+                        "- Unlimited color selection with live palette panel\n" +
+                        "- Persistent leaf numbers always visible on canvas\n" +
+                        "- TSP animation with orange dashed connecting lines\n" +
+                        "- Full Reset button to start fresh without reloading\n" +
+                        "- JMH benchmarking (see benchmark.LeafBenchmark)\n\n" +
                         "Created for Data Structures & Algorithms 2");
         alert.showAndWait();
     }
 
     // ========================================================================
-    // COLOR PALETTE PANEL  (Feature 2)
+    // COLOR PALETTE PANEL
     // ========================================================================
 
     /**
-     * Rebuilds the colorPaletteBox to reflect the current list of colors
-     * stored in imageProcessor.
+     * Rebuilds the colorPaletteBox to reflect the current color list.
      *
      * Layout:
-     *   [ Title label ]
-     *   [ swatch 1 ][ swatch 2 ] … [ + Add Color button ]
+     *   [ "Leaf Colors:" label ]
+     *   [ swatch ][ swatch ] ... [ + Add Color button ]
      *
-     * Each swatch contains:
-     *   [ colored square ]  [ HSB label ]  [ ✕ remove button ]
+     * Each swatch: [ colored square ][ HSB label ][ x remove button ]
      */
     public void refreshColorPalettePanel() {
         if (colorPaletteBox == null) return;
@@ -670,7 +787,6 @@ public class MainController {
             }
         }
 
-        // "Add Color" button — opens a ColorPicker dialog
         Button addBtn = new Button("+ Add Color");
         addBtn.setStyle(
                 "-fx-font-size: 11px; -fx-background-color: #388E3C; " +
@@ -681,28 +797,20 @@ public class MainController {
 
     /**
      * Builds one swatch widget for the given color at the given list index.
-     *
-     * @param color The color to display.
-     * @param index The position in imageProcessor.getSelectedColors() — used
-     *              by the remove button to identify which color to delete.
      */
     private HBox buildSwatch(Color color, int index) {
-        // Colored preview square
         Rectangle square = new Rectangle(18, 18, color);
         square.setStroke(Color.DARKGRAY);
         square.setStrokeWidth(1.0);
         square.setArcWidth(3);
         square.setArcHeight(3);
 
-        // Short human-readable HSB description
-        Label colorLabel = new Label(String.format(
-                "H%.0f S%.0f B%.0f",
+        Label colorLabel = new Label(String.format("H%.0f S%.0f B%.0f",
                 color.getHue(),
                 color.getSaturation() * 100,
                 color.getBrightness() * 100));
         colorLabel.setStyle("-fx-font-size: 10px;");
 
-        // Remove button
         Button removeBtn = new Button("x");
         removeBtn.setStyle(
                 "-fx-font-size: 10px; -fx-padding: 1 5; " +
@@ -727,8 +835,8 @@ public class MainController {
     }
 
     /**
-     * Opens a standard ColorPicker dialog so the user can add any color
-     * without clicking on the image. Useful when picking exact values.
+     * Opens a ColorPicker dialog so the user can add any color directly
+     * without clicking on the image.
      */
     private void openColorPickerDialog() {
         Dialog<Color> dialog = new Dialog<>();
@@ -751,24 +859,21 @@ public class MainController {
             updateColorsInfo();
             refreshColorPalettePanel();
             updateStatus("Added color: " + colorToString(color));
-            // Enable B&W conversion once at least one color is selected
             enableProcessingButtons();
         });
     }
 
     // ========================================================================
-    // CANVAS DRAWING  —  unified entry point
+    // CANVAS DRAWING — unified entry point
     // ========================================================================
 
     /**
      * Redraws the full canvas overlay in layered order:
      *
      *  Layer 1 — Blue bounding rectangles for all leaves.
-     *  Layer 2 — Persistent number labels (#1, #2, …) always on top of rectangles.
+     *  Layer 2 — Persistent number labels (#1, #2, ...) on top of rectangles.
      *  Layer 3 — Orange dashed TSP path lines + node circles (when available).
      *  Layer 4 — Orange-red thick border for the currently selected leaf.
-     *
-     * Numbers are painted regardless of hover state, so they are always visible.
      */
     private void drawLeafOverlay() {
         if (detectedLeaves.isEmpty() || overlayCanvas == null) return;
@@ -779,7 +884,6 @@ public class MainController {
         Image image = imageView.getImage();
         if (image == null) return;
 
-        // ---- Shared coordinate scale factors ----
         double procToOrigX  = image.getWidth()  / (double) imageProcessor.getWidth();
         double procToOrigY  = image.getHeight() / (double) imageProcessor.getHeight();
         double fitW         = imageView.getFitWidth();
@@ -788,7 +892,7 @@ public class MainController {
         double offsetX      = (fitW - image.getWidth()  * uniformScale) / 2.0;
         double offsetY      = (fitH - image.getHeight() * uniformScale) / 2.0;
 
-        // ---- Layer 1: Blue bounding rectangles ----
+        // Layer 1: blue rectangles
         if (showRectangles) {
             gc.setLineWidth(1.8);
             gc.setStroke(Color.DODGERBLUE);
@@ -799,7 +903,7 @@ public class MainController {
             }
         }
 
-        // ---- Layer 2: Persistent number labels ----
+        // Layer 2: persistent number labels
         if (showNumbers) {
             gc.setFont(Font.font("Arial", FontWeight.BOLD, 11));
             for (Leaf leaf : detectedLeaves) {
@@ -809,21 +913,20 @@ public class MainController {
                 double tx = r[0] + 2;
                 double ty = r[1] + 12;
 
-                // Semi-transparent blue backing rectangle for readability
+                // Semi-transparent backing box
                 gc.setFill(Color.rgb(0, 80, 200, 0.6));
                 gc.fillRoundRect(tx - 1, ty - 11, label.length() * 7.0 + 4, 14, 3, 3);
 
-                // White text
                 gc.setFill(Color.WHITE);
                 gc.fillText(label, tx, ty);
             }
         }
 
-        // ---- Layer 3: Orange TSP path lines + node circles ----
+        // Layer 3: orange TSP path lines
         if (showTSPPath && lastTSPPath != null && lastTSPPath.size() >= 2) {
             gc.setStroke(Color.ORANGE);
             gc.setLineWidth(2.5);
-            gc.setLineDashes(9, 5);   // dashed orange line
+            gc.setLineDashes(9, 5);
 
             for (int i = 0; i < lastTSPPath.size() - 1; i++) {
                 Leaf.PixelPoint a = lastTSPPath.get(i).getCenter();
@@ -836,14 +939,13 @@ public class MainController {
 
                 gc.strokeLine(ax, ay, bx, by);
 
-                // Filled circle at each stop
+                gc.setLineDashes();
                 gc.setFill(Color.ORANGE);
-                gc.setLineDashes();   // solid circle
                 gc.fillOval(ax - 4, ay - 4, 8, 8);
                 gc.setLineDashes(9, 5);
             }
 
-            // Final node
+            // Last node
             Leaf.PixelPoint last = lastTSPPath.get(lastTSPPath.size() - 1).getCenter();
             double lx = last.getX() * procToOrigX * uniformScale + offsetX;
             double ly = last.getY() * procToOrigY * uniformScale + offsetY;
@@ -852,9 +954,9 @@ public class MainController {
             gc.fillOval(lx - 4, ly - 4, 8, 8);
         }
 
-        gc.setLineDashes();   // always reset dashes
+        gc.setLineDashes();
 
-        // ---- Layer 4: Selected-leaf orange-red thick border ----
+        // Layer 4: selected-leaf orange-red border
         if (selectedLeaf != null) {
             double[] r = leafToCanvas(selectedLeaf, procToOrigX, procToOrigY,
                     uniformScale, offsetX, offsetY);
@@ -864,31 +966,24 @@ public class MainController {
         }
     }
 
-    /**
-     * Converts a Leaf bounding box from processing-space to canvas-space.
-     *
-     * @return double[]{ x, y, width, height } in canvas pixels.
-     */
+    /** Converts a Leaf bounding box from processing-space to canvas-space. */
     private double[] leafToCanvas(Leaf leaf,
                                   double procToOrigX, double procToOrigY,
                                   double uniformScale,
                                   double offsetX,    double offsetY) {
         javafx.geometry.Rectangle2D b = leaf.getBoundingBox();
-        double x = b.getMinX()   * procToOrigX * uniformScale + offsetX;
-        double y = b.getMinY()   * procToOrigY * uniformScale + offsetY;
-        double w = b.getWidth()  * procToOrigX * uniformScale;
-        double h = b.getHeight() * procToOrigY * uniformScale;
-        return new double[]{x, y, w, h};
+        return new double[]{
+                b.getMinX()   * procToOrigX * uniformScale + offsetX,
+                b.getMinY()   * procToOrigY * uniformScale + offsetY,
+                b.getWidth()  * procToOrigX * uniformScale,
+                b.getHeight() * procToOrigY * uniformScale
+        };
     }
 
-    /**
-     * Draws a single highlighted leaf rectangle during TSP animation.
-     * Calls drawLeafOverlay() first so accumulated highlights don't pile up.
-     */
+    /** Highlights one leaf during animation (calls drawLeafOverlay first to avoid stacking). */
     private void highlightLeafAnimation(Leaf leaf, Color color, double lineWidth) {
         if (overlayCanvas == null || imageView.getImage() == null) return;
-
-        drawLeafOverlay();   // clean slate
+        drawLeafOverlay();
 
         Image image = imageView.getImage();
         double procToOrigX  = image.getWidth()  / (double) imageProcessor.getWidth();
@@ -911,11 +1006,6 @@ public class MainController {
     // MOUSE INTERACTION
     // ========================================================================
 
-    /**
-     * Mouse-move handler: draws a green border around the leaf under the cursor
-     * and shows a tooltip. Numbers remain visible because drawLeafOverlay() is
-     * called before the green highlight is added.
-     */
     private void handleCanvasHover(MouseEvent event) {
         if (detectedLeaves.isEmpty() || leafDetector == null) return;
 
@@ -923,14 +1013,12 @@ public class MainController {
         if (proc == null) return;
 
         Leaf leaf = leafDetector.getLeafAtPixel(proc[0], proc[1]);
-        if (leaf == hoveredLeaf) return;   // same leaf — nothing changed
+        if (leaf == hoveredLeaf) return;
         hoveredLeaf = leaf;
 
-        // Redraw base layer (includes numbers + path)
         drawLeafOverlay();
 
         if (leaf != null) {
-            // Green hover border drawn on top
             Image image = imageView.getImage();
             double procToOrigX  = image.getWidth()  / (double) imageProcessor.getWidth();
             double procToOrigY  = image.getHeight() / (double) imageProcessor.getHeight();
@@ -947,9 +1035,8 @@ public class MainController {
             gc.setLineWidth(2.5);
             gc.strokeRect(r[0], r[1], r[2], r[3]);
 
-            // Floating tooltip
             leafTooltip.setText(String.format(
-                    "Leaf #%d  |  %d px  |  (%d,%d)–(%d,%d)",
+                    "Leaf #%d  |  %d px  |  (%d,%d)-(%d,%d)",
                     leaf.getSequentialNumber(), leaf.getSize(),
                     leaf.getMinX(), leaf.getMinY(),
                     leaf.getMaxX(), leaf.getMaxY()));
@@ -961,17 +1048,12 @@ public class MainController {
         }
     }
 
-    /** Clear hover highlight when the mouse leaves the canvas. */
     private void clearHover() {
         hoveredLeaf = null;
         leafTooltip.hide();
         drawLeafOverlay();
     }
 
-    /**
-     * Click handler: sets or clears the persistent orange selection.
-     * Leaf info is shown in the status bar (no blocking dialog).
-     */
     private void handleCanvasClick(MouseEvent event) {
         if (detectedLeaves.isEmpty() || leafDetector == null) return;
 
@@ -997,11 +1079,6 @@ public class MainController {
     // COORDINATE HELPERS
     // ========================================================================
 
-    /**
-     * Maps a canvas pixel position to the corresponding processing-space index.
-     *
-     * @return int[]{ procX, procY } or null if outside the image bounds.
-     */
     private int[] canvasToProcessing(double canvasX, double canvasY) {
         Image image = imageView.getImage();
         if (image == null) return null;
@@ -1024,7 +1101,6 @@ public class MainController {
     // UTILITY
     // ========================================================================
 
-    /** Loads an image from disk, resets all state, and prepares the UI. */
     private void loadImage(File file) {
         try {
             updateStatus("Loading image: " + file.getName());
@@ -1048,6 +1124,7 @@ public class MainController {
             labelImageInfo.setText(String.format("%s (%.0fx%.0f)",
                     file.getName(), image.getWidth(), image.getHeight()));
 
+            // Full reset of downstream state when a new image is loaded
             menuSelectColors.setDisable(false);
             btnSelectColors.setDisable(false);
 
@@ -1062,9 +1139,20 @@ public class MainController {
             lastTSPPath  = null;
             showTSPPath  = false;
             selectedLeaf = null;
+            hoveredLeaf  = null;
+
+            // Disable downstream buttons until colors are chosen
+            menuConvertBW.setDisable(true);
+            btnConvertBW.setDisable(true);
+            menuDetectLeaves.setDisable(true);
+            btnDetectLeaves.setDisable(true);
+            menuAnimatePath.setDisable(true);
+            btnAnimatePath.setDisable(true);
+            menuStopAnimation.setDisable(true);
 
             refreshColorPalettePanel();
-            updateStatus("Image loaded: " + file.getName());
+            updateStatus("Image loaded: " + file.getName()
+                    + "  — select leaf colors to continue.");
 
         } catch (Exception e) {
             showError("Load Error", "Failed to load image: " + e.getMessage());

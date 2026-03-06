@@ -53,6 +53,9 @@
                 <Button text="Detect Leaves" fx:id="btnDetectLeaves" onAction="#handleDetectLeaves" disable="true"/>
                 <Separator orientation="VERTICAL"/>
                 <Button text="Animate Path" fx:id="btnAnimatePath" onAction="#handleAnimatePath" disable="true"/>
+                <Separator orientation="VERTICAL"/>
+                <Button fx:id="btnReset" text="Reset" onAction="#handleReset"
+                        style="-fx-background-color: #b71c1c; -fx-text-fill: white;"/>
             </ToolBar>
             <Separator orientation="VERTICAL"/>
             <HBox fx:id="colorPaletteBox" spacing="6" alignment="CENTER_LEFT"
