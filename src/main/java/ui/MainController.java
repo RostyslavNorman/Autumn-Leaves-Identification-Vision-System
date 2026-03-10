@@ -12,6 +12,8 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.image.PixelReader;
+import javafx.scene.image.WritableImage;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
@@ -41,6 +43,8 @@ import java.util.List;
  *    so the user can start fresh with the same or a different image.
  * 5. Color selection is now UNLIMITED — the 3-color minimum gate is removed.
  *    Even a single color is enough to trigger B&W conversion.
+ * 6. Magnifier loupe during color-picking mode for precise pixel selection.
+ *    Fixed coordinate mapping so clicks always hit the correct pixel.
  */
 public class MainController {
 
@@ -123,6 +127,19 @@ public class MainController {
     /** Background thread for live-preview BW conversion. */
     private volatile Thread previewThread = null;
 
+    // ---- Magnifier loupe state ----
+    /** The floating magnifier canvas shown during color-picking mode. */
+    private Canvas magnifierCanvas = null;
+
+    /** Whether color-picking mode is currently active. */
+    private boolean colorPickingMode = false;
+
+    /** Size of the magnifier loupe in pixels (display size). */
+    private static final int MAGNIFIER_SIZE = 120;
+
+    /** Zoom factor: how many source pixels are captured. E.g. 11 = 11x11 src pixels. */
+    private static final int ZOOM_PIXELS = 11;
+
     // ========================================================================
     // INIT
     // ========================================================================
@@ -189,6 +206,7 @@ public class MainController {
         alert.setHeaderText("Click on leaf pixels to pick colors");
         alert.setContentText(
                 "Click directly on leaf areas in the left image.\n" +
+                        "A magnifier loupe will appear near your cursor for precision.\n" +
                         "Each click adds one color to the palette panel.\n" +
                         "Click 'Done Picking' in the toolbar when finished.\n\n" +
                         "You can also use '+ Add Color' in the palette panel\n" +
@@ -202,16 +220,29 @@ public class MainController {
     /**
      * Switches the UI into color-picking mode:
      * - Canvas becomes pass-through so imageView receives clicks.
-     * - A "Done Picking" button appears in the toolbar (replaces the
-     *   "Select Colors" button label) so the user can end the mode at any time.
+     * - A magnifier loupe appears near the cursor for precise color selection.
+     * - A "Done Picking" button appears in the toolbar.
      */
     private void enterColorPickingMode() {
-        updateStatus("Color-picking mode: click on leaves. Press 'Done Picking' when finished.");
+        colorPickingMode = true;
+        updateStatus("Color-picking mode: hover to magnify, click on leaves. Press 'Done Picking' when finished.");
 
         overlayCanvas.setMouseTransparent(true);
+
+        // Create magnifier canvas and add it to the StackPane
+        magnifierCanvas = new Canvas(MAGNIFIER_SIZE + 20, MAGNIFIER_SIZE + 40);
+        magnifierCanvas.setMouseTransparent(true);
+        magnifierCanvas.setVisible(false);
+        if (imageStackPane != null) {
+            imageStackPane.getChildren().add(magnifierCanvas);
+        }
+
+        // Wire mouse events on the imageView
+        imageView.setOnMouseMoved(this::handleColorPickHover);
+        imageView.setOnMouseExited(e -> hideMagnifier());
         imageView.setOnMouseClicked(this::handleImageClickForColor);
 
-        // Swap the Select Colors button to a "Done Picking" button
+        // Swap button
         btnSelectColors.setText("Done Picking");
         btnSelectColors.setStyle("-fx-background-color: #F57C00; -fx-text-fill: white;");
         btnSelectColors.setOnAction(e -> exitColorPickingMode());
@@ -219,8 +250,19 @@ public class MainController {
 
     /** Exits color-picking mode and restores the normal Select Colors button. */
     private void exitColorPickingMode() {
+        colorPickingMode = false;
+
+        imageView.setOnMouseMoved(null);
+        imageView.setOnMouseExited(null);
         imageView.setOnMouseClicked(null);
         overlayCanvas.setMouseTransparent(false);
+
+        // Remove and destroy the magnifier canvas
+        hideMagnifier();
+        if (magnifierCanvas != null && imageStackPane != null) {
+            imageStackPane.getChildren().remove(magnifierCanvas);
+            magnifierCanvas = null;
+        }
 
         btnSelectColors.setText("Select Colors");
         btnSelectColors.setStyle("");
@@ -236,33 +278,232 @@ public class MainController {
     }
 
     /**
+     * Computes the image-space (x, y) from a mouse event on the ImageView.
+     *
+     * ImageView uses preserveRatio=true with fitWidth/fitHeight, so the image
+     * is letter-boxed inside the fit rectangle.  The event coordinates are
+     * relative to the ImageView node itself — NOT the StackPane — so we must
+     * account for the internal letterbox offset only (no StackPane offset needed).
+     *
+     * @return double[]{imageX, imageY} in original image pixels, or null if outside image bounds
+     */
+    private double[] imageViewToImageCoords(MouseEvent event) {
+        Image image = imageView.getImage();
+        if (image == null) return null;
+
+        double imgW  = image.getWidth();
+        double imgH  = image.getHeight();
+        double fitW  = imageView.getFitWidth();
+        double fitH  = imageView.getFitHeight();
+
+        // Scale that preserves ratio and fits inside fitW x fitH
+        double scale   = Math.min(fitW / imgW, fitH / imgH);
+        double rendW   = imgW * scale;
+        double rendH   = imgH * scale;
+
+        // Letter-box offsets (within the ImageView node bounds)
+        double offsetX = (fitW - rendW) / 2.0;
+        double offsetY = (fitH - rendH) / 2.0;
+
+        double imageX = (event.getX() - offsetX) / scale;
+        double imageY = (event.getY() - offsetY) / scale;
+
+        if (imageX < 0 || imageX >= imgW || imageY < 0 || imageY >= imgH) return null;
+        return new double[]{imageX, imageY};
+    }
+
+    /**
+     * Handles mouse movement over the image during color-picking mode.
+     * Updates the magnifier loupe to show a zoomed view around the cursor.
+     */
+    private void handleColorPickHover(MouseEvent event) {
+        if (!colorPickingMode || magnifierCanvas == null) return;
+
+        double[] coords = imageViewToImageCoords(event);
+        if (coords == null) {
+            hideMagnifier();
+            return;
+        }
+
+        double imageX = coords[0];
+        double imageY = coords[1];
+
+        updateMagnifier(event, (int) imageX, (int) imageY);
+    }
+
+    /**
+     * Draws a zoomed loupe near the cursor showing the pixels around (imgX, imgY).
+     * The loupe repositions to avoid going off-screen.
+     */
+    private void updateMagnifier(MouseEvent event, int imgX, int imgY) {
+        if (magnifierCanvas == null) return;
+
+        Image image = imageView.getImage();
+        if (image == null) return;
+
+        int totalW = (int) (MAGNIFIER_SIZE + 20);
+        int totalH = (int) (MAGNIFIER_SIZE + 40);
+        magnifierCanvas.setWidth(totalW);
+        magnifierCanvas.setHeight(totalH);
+
+        GraphicsContext gc = magnifierCanvas.getGraphicsContext2D();
+        gc.clearRect(0, 0, totalW, totalH);
+
+        // --- Draw background panel ---
+        gc.setFill(Color.rgb(30, 30, 30, 0.88));
+        gc.fillRoundRect(0, 0, totalW, totalH, 12, 12);
+        gc.setStroke(Color.rgb(255, 200, 50, 0.9));
+        gc.setLineWidth(2);
+        gc.strokeRoundRect(1, 1, totalW - 2, totalH - 2, 12, 12);
+
+        // --- Draw title ---
+        gc.setFill(Color.rgb(255, 200, 50));
+        gc.setFont(Font.font("Arial", FontWeight.BOLD, 10));
+        gc.fillText("🔍 Magnifier", 8, 14);
+
+        // --- Draw zoomed pixels ---
+        PixelReader pr = image.getPixelReader();
+        int half     = ZOOM_PIXELS / 2;
+        double cellW = (double) MAGNIFIER_SIZE / ZOOM_PIXELS;
+        double cellH = (double) MAGNIFIER_SIZE / ZOOM_PIXELS;
+        double startX = 10;
+        double startY = 18;
+
+        for (int dy = 0; dy < ZOOM_PIXELS; dy++) {
+            for (int dx = 0; dx < ZOOM_PIXELS; dx++) {
+                int px = imgX - half + dx;
+                int py = imgY - half + dy;
+
+                Color c;
+                if (px < 0 || px >= (int) image.getWidth() || py < 0 || py >= (int) image.getHeight()) {
+                    c = Color.rgb(20, 20, 20);
+                } else {
+                    c = pr.getColor(px, py);
+                }
+
+                gc.setFill(c);
+                gc.fillRect(startX + dx * cellW, startY + dy * cellH, cellW, cellH);
+            }
+        }
+
+        // --- Draw crosshair at center cell ---
+        double cx = startX + half * cellW + cellW / 2;
+        double cy = startY + half * cellH + cellH / 2;
+        gc.setStroke(Color.WHITE);
+        gc.setLineWidth(1.2);
+        gc.strokeLine(startX, cy, startX + MAGNIFIER_SIZE, cy);
+        gc.strokeLine(cx, startY, cx, startY + MAGNIFIER_SIZE);
+
+        // Highlight center cell border
+        gc.setStroke(Color.rgb(255, 80, 80));
+        gc.setLineWidth(2);
+        gc.strokeRect(startX + half * cellW, startY + half * cellH, cellW, cellH);
+
+        // --- Draw center pixel color swatch + hex ---
+        Color centerColor = (imgX >= 0 && imgX < (int) image.getWidth()
+                && imgY >= 0 && imgY < (int) image.getHeight())
+                ? pr.getColor(imgX, imgY)
+                : Color.BLACK;
+
+        double swatchX = startX;
+        double swatchY = startY + MAGNIFIER_SIZE + 4;
+        gc.setFill(centerColor);
+        gc.fillRoundRect(swatchX, swatchY, 16, 12, 3, 3);
+        gc.setStroke(Color.LIGHTGRAY);
+        gc.setLineWidth(0.8);
+        gc.strokeRoundRect(swatchX, swatchY, 16, 12, 3, 3);
+
+        String hex = String.format("#%02X%02X%02X",
+                (int) (centerColor.getRed()   * 255),
+                (int) (centerColor.getGreen() * 255),
+                (int) (centerColor.getBlue()  * 255));
+        gc.setFill(Color.WHITE);
+        gc.setFont(Font.font("Monospaced", 9));
+        gc.fillText(hex + "  (" + imgX + "," + imgY + ")", swatchX + 20, swatchY + 10);
+
+        // --- Position loupe: offset from cursor, keep within ImageView bounds ---
+        double fitW      = imageView.getFitWidth();
+        double fitH      = imageView.getFitHeight();
+        double imgWd     = image.getWidth();
+        double imgHd     = image.getHeight();
+        double scale     = Math.min(fitW / imgWd, fitH / imgHd);
+        double rendW     = imgWd * scale;
+        double rendH     = imgHd * scale;
+        double offsetX   = (fitW - rendW) / 2.0;
+        double offsetY   = (fitH - rendH) / 2.0;
+
+        // cursor position on the ImageView node
+        double cursorX = event.getX();
+        double cursorY = event.getY();
+
+        double loupeOffX = 18;
+        double loupeOffY = 18;
+
+        // Flip left if near right edge
+        if (cursorX + loupeOffX + totalW > fitW - offsetX) loupeOffX = -(totalW + 8);
+        // Flip up if near bottom edge
+        if (cursorY + loupeOffY + totalH > fitH - offsetY) loupeOffY = -(totalH + 8);
+
+        // StackPane.setAlignment is CENTER, so we offset from center
+        double stackW = imageStackPane.getWidth();
+        double stackH = imageStackPane.getHeight();
+
+        // imageView's top-left corner inside the StackPane
+        double ivLeft = (stackW - fitW) / 2.0;
+        double ivTop  = (stackH - fitH) / 2.0;
+
+        double loupeLeft = ivLeft + cursorX + loupeOffX;
+        double loupeTop  = ivTop  + cursorY + loupeOffY;
+
+        // Clamp within StackPane
+        loupeLeft = Math.max(0, Math.min(loupeLeft, stackW - totalW));
+        loupeTop  = Math.max(0, Math.min(loupeTop,  stackH - totalH));
+
+        StackPane.setAlignment(magnifierCanvas, javafx.geometry.Pos.TOP_LEFT);
+        StackPane.setMargin(magnifierCanvas, new Insets(loupeTop, 0, 0, loupeLeft));
+
+        magnifierCanvas.setVisible(true);
+    }
+
+    private void hideMagnifier() {
+        if (magnifierCanvas != null) {
+            magnifierCanvas.setVisible(false);
+        }
+    }
+
+    /**
      * Handles a single click on the image during color-picking mode.
-     * Samples the pixel, adds it to the processor, refreshes the palette panel.
-     * No minimum color count — one color is enough.
+     *
+     * Uses the fixed imageViewToImageCoords() helper so the sampled pixel
+     * always matches exactly what the user sees under the crosshair.
      */
     private void handleImageClickForColor(MouseEvent event) {
         Image image = imageView.getImage();
         if (image == null) return;
 
-        // Account for letterbox offset (preserveRatio=true)
-        double fitW      = imageView.getFitWidth();
-        double fitH      = imageView.getFitHeight();
-        double imgW      = image.getWidth();
-        double imgH      = image.getHeight();
-        double scale     = Math.min(fitW / imgW, fitH / imgH);
-        double offsetX   = (fitW - imgW * scale) / 2.0;
-        double offsetY   = (fitH - imgH * scale) / 2.0;
+        double[] coords = imageViewToImageCoords(event);
+        if (coords == null) return;
 
-        double imageX = (event.getX() - offsetX) / scale;
-        double imageY = (event.getY() - offsetY) / scale;
+        int imageX = (int) coords[0];
+        int imageY = (int) coords[1];
 
-        if (imageX < 0 || imageX >= imgW || imageY < 0 || imageY >= imgH) return;
-
-        Color color = image.getPixelReader().getColor((int) imageX, (int) imageY);
+        Color color = image.getPixelReader().getColor(imageX, imageY);
         imageProcessor.addLeafColor(color);
 
+        // Flash the magnifier border to confirm selection
+        if (magnifierCanvas != null && magnifierCanvas.isVisible()) {
+            GraphicsContext gc = magnifierCanvas.getGraphicsContext2D();
+            gc.setStroke(Color.LIMEGREEN);
+            gc.setLineWidth(3);
+            gc.strokeRoundRect(1, 1,
+                    magnifierCanvas.getWidth() - 2,
+                    magnifierCanvas.getHeight() - 2,
+                    12, 12);
+        }
+
         updateStatus("Added color: " + colorToString(color)
-                + "  (total: " + imageProcessor.getSelectedColors().size() + ")");
+                + "  (total: " + imageProcessor.getSelectedColors().size() + ")"
+                + "  at pixel (" + imageX + "," + imageY + ")");
         updateColorsInfo();
         refreshColorPalettePanel();
 
@@ -350,50 +591,29 @@ public class MainController {
     }
 
     // ========================================================================
-    // RESET  (Feature 4)
+    // RESET
     // ========================================================================
 
-    /**
-     * Full reset handler — can be triggered from the Reset button or menu.
-     *
-     * What gets cleared:
-     *   - Animation (stopped if running)
-     *   - TSP path lines
-     *   - Leaf detection results
-     *   - B&W image
-     *   - Selected colors and palette panel
-     *   - Canvas overlay
-     *   - All status labels back to defaults
-     *
-     * What is KEPT:
-     *   - The loaded original image (the user can immediately re-select
-     *     colors and re-run, or load a different image via Open Image).
-     */
     @FXML
     private void handleReset() {
-        // Stop any running animation first
         if (animationTimeline != null) {
             animationTimeline.stop();
             animationTimeline = null;
         }
 
-        // Cancel any in-flight preview thread
         if (previewThread != null) {
             previewThread.interrupt();
             previewThread = null;
         }
 
-        // Close settings window if open
         if (settingsStage != null && settingsStage.isShowing()) {
             settingsStage.close();
         }
 
-        // Exit color-picking mode cleanly if active
-        if (overlayCanvas.isMouseTransparent()) {
+        if (colorPickingMode) {
             exitColorPickingMode();
         }
 
-        // Clear detection state
         detectedLeaves.clear();
         leafDetector    = null;
         lastTSPPath     = null;
@@ -402,25 +622,17 @@ public class MainController {
         hoveredLeaf     = null;
         leafTooltip.hide();
 
-        // Clear colors
         imageProcessor.clearLeafColors();
-
-        // Clear B&W image
         bwImageView.setImage(null);
-
-        // Clear overlay canvas
         clearCanvas();
 
-        // Reset status labels
         labelColorsInfo.setText("None");
         labelLeavesCount.setText("0");
         labelProcessingTime.setText("-");
 
-        // Refresh palette panel (will show "(none)")
         refreshColorPalettePanel();
         updateColorsInfo();
 
-        // Disable downstream buttons — user must re-select colors to proceed
         menuConvertBW.setDisable(true);
         btnConvertBW.setDisable(true);
         menuDetectLeaves.setDisable(true);
@@ -429,7 +641,6 @@ public class MainController {
         btnAnimatePath.setDisable(true);
         menuStopAnimation.setDisable(true);
 
-        // Keep Select Colors enabled if an image is loaded
         boolean imageLoaded = imageView.getImage() != null;
         menuSelectColors.setDisable(!imageLoaded);
         btnSelectColors.setDisable(!imageLoaded);
@@ -677,13 +888,6 @@ public class MainController {
         });
     }
 
-    /**
-     * Runs the TSP nearest-neighbour animation then draws the full orange path.
-     *
-     * During animation each arriving leaf flashes YELLOW then settles to BLUE.
-     * After it finishes, drawLeafOverlay() redraws everything including the
-     * persistent orange dashed path lines stored in lastTSPPath.
-     */
     private void animatePath(int startNumber) {
         List<Leaf> path = TSPSolver.findPathFromNumber(detectedLeaves, startNumber);
         if (path.isEmpty()) { showError("Path Error", "Could not compute path."); return; }
@@ -742,14 +946,15 @@ public class MainController {
         alert.setTitle("About");
         alert.setHeaderText("Autumn Leaves Identification System");
         alert.setContentText(
-                "Version 2.1\n\n" +
+                "Version 2.2\n\n" +
                         "Features:\n" +
                         "- Union-Find leaf detection (DisjointSet)\n" +
                         "- Unlimited color selection with live palette panel\n" +
+                        "- Magnifier loupe during color-picking for pixel precision\n" +
+                        "- Fixed coordinate mapping (no offset drift)\n" +
                         "- Persistent leaf numbers always visible on canvas\n" +
                         "- TSP animation with orange dashed connecting lines\n" +
-                        "- Full Reset button to start fresh without reloading\n" +
-                        "- JMH benchmarking (see benchmark.LeafBenchmark)\n\n" +
+                        "- Full Reset button to start fresh without reloading\n\n" +
                         "Created for Data Structures & Algorithms 2");
         alert.showAndWait();
     }
@@ -758,15 +963,6 @@ public class MainController {
     // COLOR PALETTE PANEL
     // ========================================================================
 
-    /**
-     * Rebuilds the colorPaletteBox to reflect the current color list.
-     *
-     * Layout:
-     *   [ "Leaf Colors:" label ]
-     *   [ swatch ][ swatch ] ... [ + Add Color button ]
-     *
-     * Each swatch: [ colored square ][ HSB label ][ x remove button ]
-     */
     public void refreshColorPalettePanel() {
         if (colorPaletteBox == null) return;
         colorPaletteBox.getChildren().clear();
@@ -795,9 +991,6 @@ public class MainController {
         colorPaletteBox.getChildren().add(addBtn);
     }
 
-    /**
-     * Builds one swatch widget for the given color at the given list index.
-     */
     private HBox buildSwatch(Color color, int index) {
         Rectangle square = new Rectangle(18, 18, color);
         square.setStroke(Color.DARKGRAY);
@@ -834,10 +1027,6 @@ public class MainController {
         return swatch;
     }
 
-    /**
-     * Opens a ColorPicker dialog so the user can add any color directly
-     * without clicking on the image.
-     */
     private void openColorPickerDialog() {
         Dialog<Color> dialog = new Dialog<>();
         dialog.setTitle("Add Leaf Color");
@@ -867,14 +1056,6 @@ public class MainController {
     // CANVAS DRAWING — unified entry point
     // ========================================================================
 
-    /**
-     * Redraws the full canvas overlay in layered order:
-     *
-     *  Layer 1 — Blue bounding rectangles for all leaves.
-     *  Layer 2 — Persistent number labels (#1, #2, ...) on top of rectangles.
-     *  Layer 3 — Orange dashed TSP path lines + node circles (when available).
-     *  Layer 4 — Orange-red thick border for the currently selected leaf.
-     */
     private void drawLeafOverlay() {
         if (detectedLeaves.isEmpty() || overlayCanvas == null) return;
 
@@ -913,10 +1094,8 @@ public class MainController {
                 double tx = r[0] + 2;
                 double ty = r[1] + 12;
 
-                // Semi-transparent backing box
                 gc.setFill(Color.rgb(0, 80, 200, 0.6));
                 gc.fillRoundRect(tx - 1, ty - 11, label.length() * 7.0 + 4, 14, 3, 3);
-
                 gc.setFill(Color.WHITE);
                 gc.fillText(label, tx, ty);
             }
@@ -938,14 +1117,12 @@ public class MainController {
                 double by = b.getY() * procToOrigY * uniformScale + offsetY;
 
                 gc.strokeLine(ax, ay, bx, by);
-
                 gc.setLineDashes();
                 gc.setFill(Color.ORANGE);
                 gc.fillOval(ax - 4, ay - 4, 8, 8);
                 gc.setLineDashes(9, 5);
             }
 
-            // Last node
             Leaf.PixelPoint last = lastTSPPath.get(lastTSPPath.size() - 1).getCenter();
             double lx = last.getX() * procToOrigX * uniformScale + offsetX;
             double ly = last.getY() * procToOrigY * uniformScale + offsetY;
@@ -966,7 +1143,6 @@ public class MainController {
         }
     }
 
-    /** Converts a Leaf bounding box from processing-space to canvas-space. */
     private double[] leafToCanvas(Leaf leaf,
                                   double procToOrigX, double procToOrigY,
                                   double uniformScale,
@@ -980,7 +1156,6 @@ public class MainController {
         };
     }
 
-    /** Highlights one leaf during animation (calls drawLeafOverlay first to avoid stacking). */
     private void highlightLeafAnimation(Leaf leaf, Color color, double lineWidth) {
         if (overlayCanvas == null || imageView.getImage() == null) return;
         drawLeafOverlay();
@@ -1124,7 +1299,6 @@ public class MainController {
             labelImageInfo.setText(String.format("%s (%.0fx%.0f)",
                     file.getName(), image.getWidth(), image.getHeight()));
 
-            // Full reset of downstream state when a new image is loaded
             menuSelectColors.setDisable(false);
             btnSelectColors.setDisable(false);
 
@@ -1141,7 +1315,6 @@ public class MainController {
             selectedLeaf = null;
             hoveredLeaf  = null;
 
-            // Disable downstream buttons until colors are chosen
             menuConvertBW.setDisable(true);
             btnConvertBW.setDisable(true);
             menuDetectLeaves.setDisable(true);
