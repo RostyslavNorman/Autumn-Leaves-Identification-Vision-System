@@ -1,85 +1,22 @@
-# JMH version: 1.36
-# VM version: JDK 23.0.1, Java HotSpot(TM) 64-Bit Server VM, 23.0.1+11-39
-# VM invoker: /Library/Java/JavaVirtualMachines/jdk-23.jdk/Contents/Home/bin/java
-# VM options: -javaagent:/Applications/IntelliJ IDEA.app/Contents/lib/idea_rt.jar=64146 -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8
-# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
-# Warmup: 3 iterations, 1 s each
-# Measurement: 5 iterations, 2 s each
-# Timeout: 10 min per iteration
-# Threads: 1 thread, will synchronize iterations
-# Benchmark mode: Average time, time/op
-# Benchmark: jmh.LeafBenchmark.benchConnected
-# Parameters: (disjointSetSize = 10000, leafCount = 10)
+================================================================
+  AUTUMN LEAVES IDENTIFICATION SYSTEM — JMH BENCHMARK RESULTS
+================================================================
+  Mode    : AverageTime (lower is better)
+  Unit    : microseconds (us)  [1 us = 0.000001 seconds]
+  Warmup  : 2 iterations x 1 s
+  Measure : 3 iterations x 1 s
+  Fork    : 1 JVM per benchmark
 
-# Run progress: 0.00% complete, ETA 00:29:15
-# Fork: 1 of 1
-# Warmup Iteration   1: 0.326 us/op
-# Warmup Iteration   2: 0.335 us/op
-# Warmup Iteration   3: 0.393 us/op
-Iteration   1: 0.326 us/op
-Iteration   2: 0.403 us/op
-Iteration   3: 0.328 us/op
-Iteration   4: 0.375 us/op
-Iteration   5: 0.328 us/op
+  Classes benchmarked:
+    model.DisjointSet   - find, union, connected, getSetSize
+    model.LeafDetector  - full detection pipeline
+    algorithm.TSPSolver - findPath, calculatePathLength, formatPath
 
+  Parameters:
+    disjointSetSize : 10000 (small) / 360000 (large, ~600x600 image)
+    leafCount       : 10 (few) / 100 (many)
+    imageSize       : 100 (small) / 600 (large)
 
-Result "jmh.LeafBenchmark.benchConnected":
-  0.352 ±(99.9%) 0.135 us/op [Average]
-  (min, avg, max) = (0.326, 0.352, 0.403), stdev = 0.035
-  CI (99.9%): [0.217, 0.487] (assumes normal distribution)
+  Started : Tue Mar 10 09:29:43 GMT 2026
+================================================================
 
-
-# JMH version: 1.36
-# VM version: JDK 23.0.1, Java HotSpot(TM) 64-Bit Server VM, 23.0.1+11-39
-# VM invoker: /Library/Java/JavaVirtualMachines/jdk-23.jdk/Contents/Home/bin/java
-# VM options: -javaagent:/Applications/IntelliJ IDEA.app/Contents/lib/idea_rt.jar=64146 -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8
-# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
-# Warmup: 3 iterations, 1 s each
-# Measurement: 5 iterations, 2 s each
-# Timeout: 10 min per iteration
-# Threads: 1 thread, will synchronize iterations
-# Benchmark mode: Average time, time/op
-# Benchmark: jmh.LeafBenchmark.benchConnected
-# Parameters: (disjointSetSize = 10000, leafCount = 50)
-
-# Run progress: 0.74% complete, ETA 00:41:38
-# Fork: 1 of 1
-# Warmup Iteration   1: 0.332 us/op
-# Warmup Iteration   2: 0.359 us/op
-# Warmup Iteration   3: 0.386 us/op
-Iteration   1: 0.321 us/op
-Iteration   2: 0.339 us/op
-Iteration   3: 0.338 us/op
-Iteration   4: 0.330 us/op
-Iteration   5: 0.335 us/op
-
-
-Result "jmh.LeafBenchmark.benchConnected":
-  0.333 ±(99.9%) 0.027 us/op [Average]
-  (min, avg, max) = (0.321, 0.333, 0.339), stdev = 0.007
-  CI (99.9%): [0.305, 0.360] (assumes normal distribution)
-
-
-# JMH version: 1.36
-# VM version: JDK 23.0.1, Java HotSpot(TM) 64-Bit Server VM, 23.0.1+11-39
-# VM invoker: /Library/Java/JavaVirtualMachines/jdk-23.jdk/Contents/Home/bin/java
-# VM options: -javaagent:/Applications/IntelliJ IDEA.app/Contents/lib/idea_rt.jar=64146 -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8
-# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
-# Warmup: 3 iterations, 1 s each
-# Measurement: 5 iterations, 2 s each
-# Timeout: 10 min per iteration
-# Threads: 1 thread, will synchronize iterations
-# Benchmark mode: Average time, time/op
-# Benchmark: jmh.LeafBenchmark.benchConnected
-# Parameters: (disjointSetSize = 10000, leafCount = 100)
-
-# Run progress: 1.48% complete, ETA 00:41:16
-# Fork: 1 of 1
-# Warmup Iteration   1: 0.327 us/op
-# Warmup Iteration   2: 0.336 us/op
-# Warmup Iteration   3: 0.363 us/op
-Iteration   1: 0.357 us/op
-Iteration   2: 0.360 us/op
-Iteration   3: 0.358 us/op
-Iteration   4: 0.361 us/op
-Iteration   5: 

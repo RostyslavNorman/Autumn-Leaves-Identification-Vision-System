@@ -33,24 +33,6 @@ import java.util.concurrent.TimeUnit;
  *    TSPSolver    : findPath(), findPathFromNumber(),
  *                   findPathFromLargest(), calculatePathLength(),
  *                   formatPath()
- *
- *  No JavaFX imports — JMH runs on plain Java threads.
- *  Pixel data is provided by the inner SyntheticPixelGrid class.
- *
- *  To run: right-click main() in your IDE and run it.
- *
- *  pom.xml dependencies required:
- *    <dependency>
- *      <groupId>org.openjdk.jmh</groupId>
- *      <artifactId>jmh-core</artifactId>
- *      <version>1.37</version>
- *    </dependency>
- *    <dependency>
- *      <groupId>org.openjdk.jmh</groupId>
- *      <artifactId>jmh-generator-annprocess</artifactId>
- *      <version>1.37</version>
- *      <scope>provided</scope>
- *    </dependency>
  * ============================================================
  */
 @BenchmarkMode(Mode.AverageTime)
