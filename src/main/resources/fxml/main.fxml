@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<?import javafx.geometry.Insets?>
 <?import javafx.scene.control.*?>
 <?import javafx.scene.image.ImageView?>
 <?import javafx.scene.layout.*?>
@@ -9,7 +8,6 @@
 <BorderPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
             fx:controller="ui.MainController">
 
-    <!-- Top: Menu Bar -->
     <top>
         <VBox>
             <MenuBar>
@@ -18,120 +16,153 @@
                     <SeparatorMenuItem/>
                     <MenuItem text="Exit" onAction="#handleExit"/>
                 </Menu>
-
                 <Menu text="Process">
-                    <MenuItem text="Select Leaf Colors..." fx:id="menuSelectColors" onAction="#handleSelectColors" disable="true"/>
-                    <MenuItem text="Convert to B&amp;W" fx:id="menuConvertBW" onAction="#handleConvertToBlackWhite" disable="true"/>
-                    <MenuItem text="Detect Leaves" fx:id="menuDetectLeaves" onAction="#handleDetectLeaves" disable="true"/>
+                    <MenuItem text="Select Leaf Colors..."
+                              fx:id="menuSelectColors" onAction="#handleSelectColors" disable="true"/>
+                    <MenuItem text="Convert to B&amp;W"
+                              fx:id="menuConvertBW" onAction="#handleConvertToBlackWhite" disable="true"/>
+                    <MenuItem text="Detect Leaves"
+                              fx:id="menuDetectLeaves" onAction="#handleDetectLeaves" disable="true"/>
                     <SeparatorMenuItem/>
                     <MenuItem text="Settings..." fx:id="menuSettings" onAction="#handleSettings"/>
                 </Menu>
-
                 <Menu text="View">
-                    <CheckMenuItem text="Show Original Image" fx:id="menuShowOriginal" selected="true" onAction="#handleToggleOriginal"/>
-                    <CheckMenuItem text="Show B&amp;W Image" fx:id="menuShowBW" onAction="#handleToggleBW"/>
-                    <CheckMenuItem text="Show Leaf Rectangles" fx:id="menuShowRectangles" selected="true" onAction="#handleToggleRectangles"/>
-                    <CheckMenuItem text="Show Leaf Numbers" fx:id="menuShowNumbers" onAction="#handleToggleNumbers"/>
+                    <CheckMenuItem text="Show Original Image"
+                                   fx:id="menuShowOriginal" selected="true" onAction="#handleToggleOriginal"/>
+                    <CheckMenuItem text="Show B&amp;W Image"
+                                   fx:id="menuShowBW" onAction="#handleToggleBW"/>
+                    <CheckMenuItem text="Show Leaf Rectangles"
+                                   fx:id="menuShowRectangles" selected="true" onAction="#handleToggleRectangles"/>
+                    <CheckMenuItem text="Show Leaf Numbers"
+                                   fx:id="menuShowNumbers" onAction="#handleToggleNumbers"/>
                 </Menu>
-
                 <Menu text="Animation">
-                    <MenuItem text="Animate Path..." fx:id="menuAnimatePath" onAction="#handleAnimatePath" disable="true"/>
-                    <MenuItem text="Stop Animation" fx:id="menuStopAnimation" onAction="#handleStopAnimation" disable="true"/>
+                    <MenuItem text="Animate Path..."
+                              fx:id="menuAnimatePath" onAction="#handleAnimatePath" disable="true"/>
+                    <MenuItem text="Stop Animation"
+                              fx:id="menuStopAnimation" onAction="#handleStopAnimation" disable="true"/>
                 </Menu>
-
                 <Menu text="Help">
                     <MenuItem text="About" onAction="#handleAbout"/>
                 </Menu>
             </MenuBar>
 
-            <!-- Toolbar -->
+            <!--
+                Toolbar: all buttons use the default JavaFX style so they look
+                identical to "Open Image" and "Select Colors".
+                Only Reset keeps a red tint — it is a destructive action.
+            -->
             <ToolBar>
                 <Button text="Open Image" onAction="#handleOpenImage"/>
                 <Separator orientation="VERTICAL"/>
-                <Button text="Select Colors" fx:id="btnSelectColors" onAction="#handleSelectColors" disable="true"/>
-                <Button text="Convert B&amp;W" fx:id="btnConvertBW" onAction="#handleConvertToBlackWhite" disable="true"/>
-                <Button text="Detect Leaves" fx:id="btnDetectLeaves" onAction="#handleDetectLeaves" disable="true"/>
+                <Button fx:id="btnSelectColors" text="Select Colors"
+                        onAction="#handleSelectColors" disable="true"/>
+                <Button fx:id="btnConvertBW"    text="Convert B&amp;W"
+                        onAction="#handleConvertToBlackWhite" disable="true"/>
+                <Button fx:id="btnDetectLeaves" text="Detect Leaves"
+                        onAction="#handleDetectLeaves" disable="true"/>
                 <Separator orientation="VERTICAL"/>
-                <Button text="Animate Path" fx:id="btnAnimatePath" onAction="#handleAnimatePath" disable="true"/>
+                <!-- New disjoint-set buttons — no style attribute, match toolbar default -->
+                <Button fx:id="btnColorSets" text="Colour Sets Randomly"
+                        onAction="#handleColorSetsRandomly" disable="true"/>
+                <Button fx:id="btnPickSet"   text="Pick Set"
+                        onAction="#handlePickSet" disable="true"/>
+                <Button fx:id="btnResetBW"   text="Reset B&amp;W"
+                        onAction="#handleResetBW" disable="true"/>
+                <Separator orientation="VERTICAL"/>
+                <Button fx:id="btnAnimatePath" text="Animate Path"
+                        onAction="#handleAnimatePath" disable="true"/>
                 <Separator orientation="VERTICAL"/>
                 <Button fx:id="btnReset" text="Reset" onAction="#handleReset"
-                        style="-fx-background-color: #b71c1c; -fx-text-fill: white;"/>
+                        style="-fx-background-color:#b71c1c;-fx-text-fill:white;"/>
             </ToolBar>
-            <Separator orientation="VERTICAL"/>
+
+            <!-- Color palette strip -->
             <HBox fx:id="colorPaletteBox" spacing="6" alignment="CENTER_LEFT"
-                  style="-fx-padding: 0 8;"/>
+                  style="-fx-padding:3 8;-fx-background-color:#fafafa;
+                         -fx-border-color:#e0e0e0;-fx-border-width:0 0 1 0;"/>
         </VBox>
     </top>
 
-    <!-- Center: Image Display Area -->
+    <!--
+        CENTER — the critical layout section.
+
+        THE DISPLACEMENT PROBLEM AND ITS REAL SOLUTION
+        ───────────────────────────────────────────────
+        A Canvas does not participate in JavaFX layout — it has a fixed pixel
+        size and is always placed at its layout position.  A StackPane centers
+        all its children by default.
+
+        If the StackPane has padding, its "content area" is smaller than its
+        total size, and a 500×500 Canvas gets centered in that smaller area.
+        The ImageView (also 500×500 fit-rect) gets centered in the same area,
+        so both end up at the same position — but the ImageView then
+        letter-boxes its actual image *inside* the 500×500 fit rectangle using
+        its own internal centering.  The Canvas, which has no such internal
+        offset, starts drawing at (0,0) relative to its own top-left corner.
+
+        The only reliable solution is:
+          1. NO padding on the StackPane (so StackPane content area = full size).
+          2. Canvas and ImageView both left at StackPane default (CENTER alignment).
+          3. In code, after layout, resize the Canvas to exactly
+             imageView.getBoundsInParent() width/height and reposition it to the
+             same layout x/y — this is done via a layoutBoundsProperty listener
+             in MainController.initialize().
+          4. All drawing uses imageView.getBoundsInLocal() which gives the actual
+             rendered image size (may be smaller than fitWidth×fitHeight when
+             preserveRatio is true).
+
+        This means the Canvas pixel (0,0) always coincides with the ImageView
+        rendered-image pixel (0,0), and no manual offset correction is needed.
+    -->
     <center>
         <SplitPane dividerPositions="0.5">
-            <!-- Left: Original/Processed Image -->
-            <VBox>
-                <Label text="Original Image" style="-fx-font-weight: bold; -fx-padding: 5;">
-                    <VBox.margin>
-                        <Insets top="5" left="5" right="5" bottom="5"/>
-                    </VBox.margin>
-                </Label>
 
+            <!-- Left: original image + overlay canvas, no padding -->
+            <VBox>
+                <Label text="Original Image"
+                       style="-fx-font-weight:bold;-fx-padding:5 5 2 5;"/>
                 <ScrollPane fitToWidth="true" fitToHeight="true" VBox.vgrow="ALWAYS">
                     <StackPane fx:id="imageStackPane">
-                        <ImageView fx:id="imageView" preserveRatio="true" smooth="true"
-                                   fitWidth="500" fitHeight="500">
-                            <StackPane.margin>
-                                <Insets top="10" bottom="10" left="10" right="10"/>
-                            </StackPane.margin>
-                        </ImageView>
-
-                        <!-- Canvas for drawing rectangles -->
+                        <ImageView fx:id="imageView"
+                                   preserveRatio="true" smooth="true"
+                                   fitWidth="500" fitHeight="500"/>
+                        <!-- Canvas is resized and repositioned in code to overlay the image exactly -->
                         <Canvas fx:id="overlayCanvas"/>
                     </StackPane>
                 </ScrollPane>
             </VBox>
 
-            <!-- Right: B&W Image -->
+            <!-- Right: B&W / disjoint-set coloured image, no padding -->
             <VBox>
-                <Label text="Black &amp; White Image" style="-fx-font-weight: bold; -fx-padding: 5;">
-                    <VBox.margin>
-                        <Insets top="5" left="5" right="5" bottom="5"/>
-                    </VBox.margin>
-                </Label>
-
+                <Label text="Black &amp; White Image  (Disjoint Sets)"
+                       style="-fx-font-weight:bold;-fx-padding:5 5 2 5;"/>
                 <ScrollPane fitToWidth="true" fitToHeight="true" VBox.vgrow="ALWAYS">
                     <StackPane>
-                        <ImageView fx:id="bwImageView" preserveRatio="true" smooth="true"
-                                   fitWidth="500" fitHeight="500">
-                            <StackPane.margin>
-                                <Insets top="10" bottom="10" left="10" right="10"/>
-                            </StackPane.margin>
-                        </ImageView>
+                        <ImageView fx:id="bwImageView"
+                                   preserveRatio="true" smooth="true"
+                                   fitWidth="500" fitHeight="500"/>
                     </StackPane>
                 </ScrollPane>
             </VBox>
         </SplitPane>
     </center>
 
-    <!-- Bottom: Status and Info Panel -->
     <bottom>
         <VBox>
-            <!-- Info Panel -->
-            <GridPane hgap="10" vgap="5" style="-fx-background-color: #f0f0f0; -fx-padding: 10;">
-                <Label text="Image:" GridPane.columnIndex="0" GridPane.rowIndex="0" style="-fx-font-weight: bold;"/>
-                <Label fx:id="labelImageInfo" text="No image loaded" GridPane.columnIndex="1" GridPane.rowIndex="0"/>
-
-                <Label text="Colors Selected:" GridPane.columnIndex="0" GridPane.rowIndex="1" style="-fx-font-weight: bold;"/>
-                <Label fx:id="labelColorsInfo" text="None" GridPane.columnIndex="1" GridPane.rowIndex="1"/>
-
-                <Label text="Leaves Detected:" GridPane.columnIndex="2" GridPane.rowIndex="0" style="-fx-font-weight: bold;"/>
-                <Label fx:id="labelLeavesCount" text="0" GridPane.columnIndex="3" GridPane.rowIndex="0"/>
-
-                <Label text="Processing Time:" GridPane.columnIndex="2" GridPane.rowIndex="1" style="-fx-font-weight: bold;"/>
+            <GridPane hgap="10" vgap="5"
+                      style="-fx-background-color:#f0f0f0;-fx-padding:10;">
+                <Label text="Image:"           GridPane.columnIndex="0" GridPane.rowIndex="0" style="-fx-font-weight:bold;"/>
+                <Label fx:id="labelImageInfo"  text="No image loaded" GridPane.columnIndex="1" GridPane.rowIndex="0"/>
+                <Label text="Colors Selected:" GridPane.columnIndex="0" GridPane.rowIndex="1" style="-fx-font-weight:bold;"/>
+                <Label fx:id="labelColorsInfo" text="None"  GridPane.columnIndex="1" GridPane.rowIndex="1"/>
+                <Label text="Leaves Detected:" GridPane.columnIndex="2" GridPane.rowIndex="0" style="-fx-font-weight:bold;"/>
+                <Label fx:id="labelLeavesCount" text="0"   GridPane.columnIndex="3" GridPane.rowIndex="0"/>
+                <Label text="Processing Time:" GridPane.columnIndex="2" GridPane.rowIndex="1" style="-fx-font-weight:bold;"/>
                 <Label fx:id="labelProcessingTime" text="-" GridPane.columnIndex="3" GridPane.rowIndex="1"/>
             </GridPane>
-
-            <!-- Status Bar -->
-            <HBox spacing="10" style="-fx-background-color: #e0e0e0; -fx-padding: 5;">
-                <Label text="Status:" style="-fx-font-weight: bold;"/>
+            <HBox spacing="10" style="-fx-background-color:#e0e0e0;-fx-padding:5;">
+                <Label text="Status:" style="-fx-font-weight:bold;"/>
                 <Label fx:id="statusLabel" text="Ready" HBox.hgrow="ALWAYS"/>
                 <ProgressBar fx:id="progressBar" prefWidth="150" visible="false"/>
             </HBox>

@@ -21,10 +21,6 @@ import java.util.List;
  * - User selects leaf colors (can be multiple)
  * - Pixels matching selected colors (within tolerance) → BLACK  (leaves shown dark)
  * - All other pixels → WHITE  (background shown light)
- *
- * NOTE: Internally, white pixels in processedImage represent LEAVES (used by
- * DisjointSet / LeafDetector). A separate displayImage is produced with the
- * visually correct inversion (black leaves on white background) for the UI.
  */
 public class ImageProcessor {
 
@@ -32,10 +28,6 @@ public class ImageProcessor {
     private WritableImage processedImage;  // Internal: WHITE = leaf pixel  (used by LeafDetector)
     private WritableImage displayImage;    // Display: BLACK = leaf pixel  (shown to user)
 
-    // FIX: track the working resolution separately from the display resolution.
-    // processingWidth/Height is the (possibly downscaled) resolution used by LeafDetector.
-    // displayWidth/displayHeight matches the original image so the right panel
-    // renders at the same apparent size as the left panel.
     private int processingWidth;
     private int processingHeight;
     private int width;   // kept as alias → processingWidth for backward compat
@@ -45,8 +37,6 @@ public class ImageProcessor {
     private List<Color> selectedColors;
 
     // Tolerances used in colorsMatch().
-    // These are deliberately kept at the original working values — the grass noise
-    // in earlier versions was caused by broken green rejection, NOT wide tolerances.
     private double hueTolerance        = 28.0;
     private double saturationTolerance = 0.30;
     private double brightnessTolerance = 0.38;
@@ -90,10 +80,6 @@ public class ImageProcessor {
         applyDimensions(rescale);
     }
 
-    // FIX: centralised dimension calculation so both overloads stay in sync.
-    // If the image already fits within MAX_PROCESS_SIZE, use native resolution.
-    // This prevents a 275x183 image from being pointlessly downscaled and losing
-    // the fine detail needed to detect small leaf clusters.
     private void applyDimensions(boolean rescale) {
         int origW = (int) originalImage.getWidth();
         int origH = (int) originalImage.getHeight();
@@ -136,8 +122,6 @@ public class ImageProcessor {
      * Two images are produced:
      *   processedImage – WHITE pixels are leaves  (used internally by LeafDetector)
      *   displayImage   – BLACK pixels are leaves  (shown on right panel, same size as original)
-     *
-     * The returned image is displayImage so the UI gets the visually correct version.
      *
      * @return WritableImage with BLACK leaves on WHITE background (for display)
      */
