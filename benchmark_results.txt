@@ -1,0 +1,22 @@
+================================================================
+  AUTUMN LEAVES IDENTIFICATION SYSTEM — JMH BENCHMARK RESULTS
+================================================================
+  Mode    : AverageTime (lower is better)
+  Unit    : microseconds (us)  [1 us = 0.000001 seconds]
+  Warmup  : 2 iterations x 1 s
+  Measure : 3 iterations x 1 s
+  Fork    : 1 JVM per benchmark
+
+  Classes benchmarked:
+    model.DisjointSet   - find, union, connected, getSetSize
+    model.LeafDetector  - full detection pipeline
+    algorithm.TSPSolver - findPath, calculatePathLength, formatPath
+
+  Parameters:
+    disjointSetSize : 10000 (small) / 360000 (large, ~600x600 image)
+    leafCount       : 10 (few) / 100 (many)
+    imageSize       : 100 (small) / 600 (large)
+
+  Started : Tue Mar 10 15:17:48 GMT 2026
+================================================================
+

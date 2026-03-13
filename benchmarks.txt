@@ -1,0 +1,9 @@
+Benchmark                                Mode  Cnt  Score    Error  Units
+UnionFindBenchmark.connectedMediumImage  avgt    3  0.009 ±  0.001  us/op
+UnionFindBenchmark.findLargeImage        avgt    3  0.004 ±  0.001  us/op
+UnionFindBenchmark.findMediumImage       avgt    3  0.004 ±  0.001  us/op
+UnionFindBenchmark.findSmallImage        avgt    3  0.004 ±  0.001  us/op
+UnionFindBenchmark.getSizeMediumImage    avgt    3  0.004 ±  0.001  us/op
+UnionFindBenchmark.unionLargeImage       avgt    3  0.009 ±  0.004  us/op
+UnionFindBenchmark.unionMediumImage      avgt    3  0.008 ±  0.003  us/op
+UnionFindBenchmark.unionSmallImage       avgt    3  0.007 ±  0.001  us/op
